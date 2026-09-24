@@ -1708,7 +1708,7 @@
 
     function Modal({ title, onClose, children, width = "760px" }) {
       return (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4" style={{ backgroundColor: C.overlay }} onClick={onClose}>
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-2.5 sm:p-4" style={{ backgroundColor: C.overlay }}>
           <div
             className="w-full rounded-2xl shadow-2xl flex flex-col"
             style={{ backgroundColor: C.card, maxWidth: `min(${width}, 96vw)`, maxHeight: "min(92vh, 940px)" }}
@@ -5450,6 +5450,7 @@
       const [fontLevel, setFontLevel] = useState(1);
       const [confirmExit, setConfirmExit] = useState(false);
       const [sectionDeadlines, setSectionDeadlines] = useState({});
+      const [readingFullscreen, setReadingFullscreen] = useState(false); // Reading matni+savollar panelini to'liq ekranda ochish
 
       useEffect(() => {
         let cancelled = false;
@@ -5496,6 +5497,14 @@
          mumkin bo'lar edi. */
       const isReview = idx >= sectionKeys.length;
       const currentKey = sectionKeys[idx];
+
+      /* Reading panelini to'liq ekranda ko'rsatib turganda Esc bosilsa yopilsin */
+      useEffect(() => {
+        if (!readingFullscreen) return;
+        const onKey = (e) => { if (e.key === "Escape") setReadingFullscreen(false); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+      }, [readingFullscreen]);
 
       const toggleFlag = (sectionKey, qid) => {
         const key = `${sectionKey}:${qid}`;
@@ -5793,12 +5802,30 @@
                   </div>
                 )}
                 {currentKey === "reading" && (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <div className="lg:max-h-[65vh] lg:overflow-y-auto lg:pr-1">
-                      <HighlightablePassage text={exam.sections.reading.passage} />
+                  <div
+                    className={readingFullscreen ? "fixed inset-0 z-50 overflow-y-auto p-4 md:p-8" : ""}
+                    style={readingFullscreen ? { backgroundColor: C.paper } : undefined}
+                  >
+                    <div className="flex items-center justify-between mb-3 gap-2">
+                      {readingFullscreen ? (
+                        <h2 className="f-display text-[18px] font-semibold" style={{ color: C.ink }}>Reading</h2>
+                      ) : <span />}
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        icon={readingFullscreen ? "compress" : "expand"}
+                        onClick={() => setReadingFullscreen((f) => !f)}
+                      >
+                        {readingFullscreen ? "Yopish" : "To'liq ekran"}
+                      </Button>
                     </div>
-                    <div className="lg:max-h-[65vh] lg:overflow-y-auto lg:pl-5" style={{ borderLeft: `1px solid ${C.borderSoft}` }}>
-                      <MCQBlock sectionKey="reading" questions={exam.sections.reading.questions} answers={answers.reading} setAnswers={(fn) => setAnswers((a) => ({ ...a, reading: fn(a.reading) }))} flagged={flagged} onToggleFlag={toggleFlag} />
+                    <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                      <div className={readingFullscreen ? "lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto lg:pr-1" : "lg:max-h-[65vh] lg:overflow-y-auto lg:pr-1"}>
+                        <HighlightablePassage text={exam.sections.reading.passage} />
+                      </div>
+                      <div className={readingFullscreen ? "lg:max-h-[calc(100vh-140px)] lg:overflow-y-auto lg:pl-5" : "lg:max-h-[65vh] lg:overflow-y-auto lg:pl-5"} style={{ borderLeft: `1px solid ${C.borderSoft}` }}>
+                        <MCQBlock sectionKey="reading" questions={exam.sections.reading.questions} answers={answers.reading} setAnswers={(fn) => setAnswers((a) => ({ ...a, reading: fn(a.reading) }))} flagged={flagged} onToggleFlag={toggleFlag} />
+                      </div>
                     </div>
                   </div>
                 )}
