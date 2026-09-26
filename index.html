@@ -5224,7 +5224,7 @@
     function QuestionNavigator({ sectionKey, questions, answers, flagged, onJump }) {
       if (!questions || !questions.length) return null;
       return (
-        <div className="fixed bottom-0 left-0 right-0 z-20 px-4 md:px-8 py-2.5 flex items-center gap-3" style={{ backgroundColor: C.card, borderTop: `1px solid ${C.border}`, boxShadow: "0 -2px 10px rgba(0,0,0,0.06)" }}>
+        <div className="flex items-center gap-3 px-4 md:px-6 py-2 overflow-x-auto">
           <span className="text-[12px] font-semibold shrink-0 hidden sm:inline" style={{ color: C.mutedSoft }}>{sectionLabel(sectionKey)}</span>
           <div className="flex items-center gap-1.5 overflow-x-auto">
             {questions.map((q, i) => {
@@ -5717,7 +5717,7 @@
       return (
         <div className="h-screen flex flex-col overflow-hidden" style={{ backgroundColor: C.paper }}>
           {FONTS}
-          <div className="shrink-0 z-20 px-4 md:px-8 py-3 flex items-center justify-between gap-3" style={{ backgroundColor: C.ink }}>
+          <div className="shrink-0 z-20 px-4 md:px-6 py-2.5 flex items-center justify-between gap-3" style={{ backgroundColor: C.ink }}>
             <button onClick={() => setConfirmExit(true)} className="flex items-center gap-1.5 text-[13px] font-semibold text-white/80 shrink-0"><Icon name="arrow-left" size={15} /> <span className="hidden sm:inline">Chiqish</span></button>
             <div className="f-display text-[14px] md:text-[15px] font-semibold text-white truncate">{exam.title}</div>
             <div className="flex items-center gap-3 shrink-0">
@@ -5736,31 +5736,29 @@
           </div>
 
           {/* Toolbar: text size + notepad — mirrors the real CD IELTS on-screen tools */}
-          <div className="shrink-0 z-10 px-4 md:px-8 py-2 flex items-center justify-end gap-2" style={{ backgroundColor: C.paper, borderBottom: `1px solid ${C.borderSoft}` }}>
-            <div className="flex items-center gap-1 rounded-lg overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
+          <div className="shrink-0 z-10 px-4 md:px-6 py-1.5 flex items-center justify-end gap-2" style={{ backgroundColor: C.paper, borderBottom: `1px solid ${C.borderSoft}` }}>
+            <div className="flex items-center h-8 rounded-lg overflow-hidden" style={{ border: `1px solid ${C.border}` }}>
               <button onClick={() => setFontLevel((l) => Math.max(0, l - 1))} className="w-8 h-8 flex items-center justify-center text-[12px] font-bold" style={{ color: C.ink, backgroundColor: C.card }}>A-</button>
               <button onClick={() => setFontLevel((l) => Math.min(FONT_SCALES.length - 1, l + 1))} className="w-8 h-8 flex items-center justify-center text-[15px] font-bold" style={{ color: C.ink, backgroundColor: C.card, borderLeft: `1px solid ${C.border}` }}>A+</button>
             </div>
-            <Button size="sm" variant={notepadOpen ? "teal" : "ghost"} icon="note-sticky" onClick={() => setNotepadOpen((o) => !o)}>Qoralama</Button>
+            <Button size="sm" className="h-8" variant={notepadOpen ? "teal" : "ghost"} icon="note-sticky" onClick={() => setNotepadOpen((o) => !o)}>Qoralama</Button>
           </div>
-
           <div
             className={
-              (isReview ? "max-w-3xl mx-auto p-5 md:p-8" : "max-w-5xl mx-auto p-5 md:p-8") +
-              (!isReview && currentKey !== "writing" ? " pb-24" : "") +
+              (isReview ? "max-w-3xl mx-auto px-5 md:px-8 py-4" : currentKey === "reading" ? "w-full px-4 md:px-6 py-3" : "max-w-5xl mx-auto px-5 md:px-8 py-4") +
               " flex-1 min-h-0 w-full" +
               (currentKey === "reading" && !isReview ? " flex flex-col overflow-y-auto lg:overflow-hidden" : " overflow-y-auto")
             }
             style={{ fontSize: `${fontScale}em` }}
           >
             {!isReview && (
-              <div className="flex items-center gap-2 mb-3 shrink-0">
+              <div className="flex items-center gap-2 mb-2 shrink-0">
                 <Icon name={sectionIcon(currentKey)} size={18} style={{ color: C.teal }} />
                 <h2 className="f-display text-[22px] font-semibold" style={{ color: C.ink }}>{sectionLabel(currentKey)}</h2>
               </div>
             )}
             {!isReview && (
-              <div className="rounded-xl p-4 mb-5 shrink-0" style={{ backgroundColor: C.card, border: `1px solid ${C.borderSoft}` }}>
+              <div className="rounded-xl p-3 mb-3 shrink-0" style={{ backgroundColor: C.card, border: `1px solid ${C.borderSoft}` }}>
                 <div className="font-semibold text-[14px] mb-1" style={{ color: C.ink }}>Part 1</div>
                 <div className="text-[13px]" style={{ color: C.muted }}>
                   {sectionInstructionText(currentKey, currentKey === "writing" ? (writingTask === 1 ? writing.task1.minWords : writing.task2.minWords) : flattenSectionQuestions(exam, currentKey).length)}
@@ -5780,7 +5778,11 @@
                 submitting={submitting}
               />
             ) : (
-              <Card className={currentKey === "reading" ? "flex-1 min-h-0 flex flex-col lg:overflow-hidden" : "shrink-0"}>
+              <Card
+                className={currentKey === "reading" ? "flex-1 min-h-0 flex flex-col lg:overflow-hidden p-3 md:p-4" : "shrink-0"}
+                padded={currentKey !== "reading"}
+                style={currentKey === "reading" ? { borderRadius: 10 } : undefined}
+              >
                 {currentKey === "listening" && (
                   <div className="space-y-4">
                     {exam.sections.listening.audioUrl ? (
@@ -5801,11 +5803,11 @@
                   </div>
                 )}
                 {currentKey === "reading" && (
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 flex-1 min-h-0">
-                    <div className="lg:h-full lg:overflow-y-auto lg:pr-1">
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 lg:gap-8 flex-1 min-h-0">
+                    <div className="lg:h-full lg:overflow-y-auto lg:pr-2 pb-3">
                       <HighlightablePassage text={exam.sections.reading.passage} />
                     </div>
-                    <div className="lg:h-full lg:overflow-y-auto lg:pl-5" style={{ borderLeft: `1px solid ${C.borderSoft}` }}>
+                    <div className="lg:h-full lg:overflow-y-auto lg:pl-6 lg:border-l pb-3" style={{ borderLeftColor: "var(--border-soft)" }}>
                       <MCQBlock sectionKey="reading" questions={exam.sections.reading.questions} answers={answers.reading} setAnswers={(fn) => setAnswers((a) => ({ ...a, reading: fn(a.reading) }))} flagged={flagged} onToggleFlag={toggleFlag} />
                     </div>
                   </div>
@@ -5864,9 +5866,25 @@
                 )}
               </Card>
             )}
+          </div>
 
-            {!isReview && (
-              <div className="flex items-center justify-between mt-5 shrink-0">
+          {/* Bottom exam bar — a normal flex sibling (not fixed), so the workspace
+              above always sizes itself around it and nothing can ever overlap it. */}
+          {!isReview && (
+            <div className="shrink-0" style={{ backgroundColor: C.card, borderTop: `1px solid ${C.border}`, boxShadow: "0 -2px 10px rgba(0,0,0,0.06)" }}>
+              {currentKey !== "writing" && (
+                <QuestionNavigator
+                  sectionKey={currentKey}
+                  questions={flattenSectionQuestions(exam, currentKey)}
+                  answers={answers[currentKey]}
+                  flagged={flagged}
+                  onJump={(qid) => {
+                    const el = document.getElementById(`q-${currentKey}-${qid}`);
+                    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                  }}
+                />
+              )}
+              <div className="flex items-center justify-between px-4 md:px-6 py-2.5" style={{ borderTop: currentKey !== "writing" ? `1px solid ${C.borderSoft}` : "none" }}>
                 <Button variant="ghost" disabled={idx === 0} onClick={() => setIdx((i) => i - 1)}>Oldingi</Button>
                 <Button onClick={goNext} icon="chevron-right">
                   {idx < sectionKeys.length - 1
@@ -5874,20 +5892,7 @@
                     : "Yakunlash"}
                 </Button>
               </div>
-            )}
-          </div>
-
-          {!isReview && currentKey !== "writing" && (
-            <QuestionNavigator
-              sectionKey={currentKey}
-              questions={flattenSectionQuestions(exam, currentKey)}
-              answers={answers[currentKey]}
-              flagged={flagged}
-              onJump={(qid) => {
-                const el = document.getElementById(`q-${currentKey}-${qid}`);
-                if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-              }}
-            />
+            </div>
           )}
 
           {notepadOpen && <ExamNotepad value={notepadText} onChange={setNotepadText} onClose={() => setNotepadOpen(false)} />}
