@@ -3872,7 +3872,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           const audioCount = s.parts.filter((p) => p.audioUrl).length;
           return total ? `${total} ta savol, ${s.parts.length} ta part${audioCount ? ` (${audioCount} tasida audio)` : ""}` : "Savollar kiritilmagan";
         }
-        if (key === "reading") return s.passage.trim() ? `${s.questions.length} ta savol, matn bor` : "Matn kiritilmagan";
+        if (key === "reading") return (s.paragraphs && s.paragraphs.length) || s.passage.trim() ? `${s.questions.length} ta savol, matn bor` : "Matn kiritilmagan";
         if (key === "writing") {
           const w = normalizeWriting(s);
           const n = [w.task1.prompt.trim() ? 1 : 0, w.task2.prompt.trim() ? 1 : 0].reduce((a, b) => a + b, 0);
@@ -3913,14 +3913,13 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         if (key === "reading") {
           return (
             <>
-              <TextArea label="Matn (passage)" rows={5} value={sections.reading.passage} onChange={(v) => setSections((s) => ({ ...s, reading: { ...s.reading, passage: v } }))} hint="Student bu matnni highlighter bilan belgilay oladi" />
               <div className="rounded-xl p-3.5 space-y-2.5" style={{ border: `1px solid ${C.borderSoft}` }}>
                 <div className="flex items-center justify-between">
-                  <div className="text-[13px] font-bold" style={{ color: C.ink }}>Paragraflar <span className="font-normal" style={{ color: C.mutedSoft }}>(Matching Headings/Information/Features savollari uchun)</span></div>
+                  <div className="text-[13px] font-bold" style={{ color: C.ink }}>Paragraflar <span className="font-normal" style={{ color: C.mutedSoft }}>— matnni shu yerga paragraflarga bo'lib kiriting (Matching Headings/Information/Features savollari uchun ham ishlatiladi)</span></div>
                   <Button size="sm" variant="ghost" icon="plus" onClick={addParagraph}>Paragraf qo'shish</Button>
                 </div>
                 {sections.reading.paragraphs.length === 0 ? (
-                  <div className="text-[12px] italic" style={{ color: C.mutedSoft }}>Hozircha paragraf kiritilmagan. Matching savol yaratish uchun matnni bu yerda alohida paragraflarga bo'lib kiriting — har biriga harf (A, B, C...) avtomatik beriladi va son cheklanmagan.</div>
+                  <div className="text-[12px] italic" style={{ color: C.mutedSoft }}>Hozircha paragraf kiritilmagan. Reading matnini shu yerda alohida paragraflarga bo'lib kiriting — har biriga harf (A, B, C...) avtomatik beriladi (son cheklanmagan) va Matching savollarda ham shu paragraflar ishlatiladi.</div>
                 ) : sections.reading.paragraphs.map((p, i) => (
                   <div key={p.id} className="flex items-start gap-2 rounded-lg p-2" style={{ backgroundColor: C.paperDim }}>
                     <div className="flex flex-col items-center gap-1 shrink-0 pt-1">
@@ -3943,6 +3942,10 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                     </button>
                   </div>
                 ))}
+                <div className="text-[11px]" style={{ color: C.mutedSoft }}>
+                  <Icon name="circle-info" size={10} className="mr-1" />
+                  Student bu matnni highlighter bilan belgilay oladi
+                </div>
               </div>
               {questionSection("reading")}
             </>
