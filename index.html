@@ -1191,6 +1191,23 @@
       );
     }
 
+    /* Savol matnida CEO/admin "**so'z**" tarzida belgilagan qismlarni qalin (<strong>)
+       qilib ko'rsatadi — savol qo'shish maydonidagi "B" (Qalin) tugmasi bilan birga
+       ishlaydi. Oddiy matn bo'lsa, o'zgarishsiz ko'rsatiladi. */
+    function RichText({ text }) {
+      if (!text) return null;
+      const parts = String(text).split(/(\*\*[^*]+\*\*)/g);
+      return (
+        <>
+          {parts.map((part, i) =>
+            part.startsWith("**") && part.endsWith("**") && part.length >= 4
+              ? <strong key={i}>{part.slice(2, -2)}</strong>
+              : <React.Fragment key={i}>{part}</React.Fragment>
+          )}
+        </>
+      );
+    }
+
     function Input({ label, value, onChange, placeholder, type = "text", icon, hint, required }) {
       return (
         <label className="block">
@@ -3433,6 +3450,47 @@
       const [pendingQuestion, setPendingQuestion] = useState(null); // { sectionKey, partId, text }
       const [saving, setSaving] = useState(false);
       const [activeSection, setActiveSection] = useState(null);
+      /* Savol matni kiritish maydoni endi bitta qatorli <input> emas — avtomatik
+         balandligi o'sib boradigan <textarea>, shunda foydalanuvchi hohlagancha
+         (istalgan uzunlikdagi) matn yoza oladi. draftRefs — har bir savol
+         maydonining DOM elementini saqlaydi, "Qalin" tugmasi belgilangan
+         qismni **...** bilan o'rab, matnni qalinlashtirish uchun ishlatiladi. */
+      const draftRefs = useRef({});
+      const autoGrowTextarea = (el) => {
+        if (!el) return;
+        el.style.height = "auto";
+        el.style.height = `${Math.min(el.scrollHeight, 260)}px`;
+      };
+      const applyBoldToDraft = (draftKey) => {
+        const el = draftRefs.current[draftKey];
+        const current = qDraft[draftKey] || "";
+        if (!el) return;
+        const start = el.selectionStart ?? current.length;
+        const end = el.selectionEnd ?? current.length;
+        let next;
+        let caretStart, caretEnd;
+        if (start === end) {
+          // Hech narsa belgilanmagan — kursor o'rniga **qalin matn** namunasi qo'yiladi.
+          next = `${current.slice(0, start)}**qalin matn**${current.slice(end)}`;
+          caretStart = start + 2;
+          caretEnd = start + 2 + "qalin matn".length;
+        } else {
+          const selected = current.slice(start, end);
+          const isBold = selected.startsWith("**") && selected.endsWith("**") && selected.length >= 4;
+          const wrapped = isBold ? selected.slice(2, -2) : `**${selected}**`;
+          next = `${current.slice(0, start)}${wrapped}${current.slice(end)}`;
+          caretStart = start;
+          caretEnd = start + wrapped.length;
+        }
+        setQDraft((d) => ({ ...d, [draftKey]: next }));
+        requestAnimationFrame(() => {
+          if (draftRefs.current[draftKey]) {
+            draftRefs.current[draftKey].focus();
+            draftRefs.current[draftKey].setSelectionRange(caretStart, caretEnd);
+            autoGrowTextarea(draftRefs.current[draftKey]);
+          }
+        });
+      };
 
       const toggleSection = (key) => setSections((s) => ({ ...s, [key]: { ...s[key], enabled: !s[key].enabled } }));
 
@@ -3614,7 +3672,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
             {questions.map((q, i) => (
               <div key={q.id} className="rounded-lg p-3" style={{ backgroundColor: C.paperDim }}>
                 <div className="flex items-start justify-between gap-2">
-                  <div className="text-[13px] font-medium" style={{ color: C.text }}>{i + 1}.{q.q ? ` ${q.q}` : ""}</div>
+                  <div className="text-[13px] font-medium" style={{ color: C.text }}>{i + 1}.{q.q ? <> <RichText text={q.q} /></> : ""}</div>
                   <button onClick={() => removeQuestion(key, q.id, partId)}><Icon name="trash" size={13} style={{ color: C.mutedSoft }} /></button>
                 </div>
                 <div className="mt-2">
@@ -3683,7 +3741,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
             ))}
             {isPending && (
               <div className="rounded-lg p-3 space-y-2" style={{ backgroundColor: C.tealSoft, border: `1.5px solid ${C.teal}` }}>
-                <div className="text-[12.5px] font-medium" style={{ color: C.tealDeep }}>"{pendingQuestion.text}" — javob turini tanlang:</div>
+                <div className="text-[12.5px] font-medium" style={{ color: C.tealDeep }}>"<RichText text={pendingQuestion.text} />" — javob turini tanlang:</div>
                 <div className="flex items-center gap-2 flex-wrap">
                   <Button size="sm" variant="subtle" icon="list-check" onClick={() => confirmAddQuestion("mcq")}>Variantli (MCQ)</Button>
                   <Button size="sm" variant="subtle" icon="square-check" onClick={() => confirmAddQuestion("multi")}>Bir nechta javobli</Button>
@@ -3692,16 +3750,30 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                 </div>
               </div>
             )}
-            <div className="flex gap-2">
-              <input
-                value={qDraft[draftKey] || ""}
-                onChange={(e) => setQDraft((d) => ({ ...d, [draftKey]: e.target.value }))}
-                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); startAddQuestion(key, partId, part ? partMode : undefined); } }}
-                placeholder="Savol matnini kiriting..."
-                className="flex-1 rounded-lg text-[13px] outline-none px-3 py-2"
-                style={{ border: `1.5px solid ${C.border}`, backgroundColor: C.paper }}
-              />
-              <Button size="sm" variant="subtle" icon="plus" onClick={() => startAddQuestion(key, partId, part ? partMode : undefined)}>Qo'shish</Button>
+            <div className="space-y-1.5">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => applyBoldToDraft(draftKey)}
+                  title="Belgilangan matnni qalinlashtirish (yoki kursor o'rniga qalin matn qo'shish)"
+                  className="w-7 h-7 rounded-md flex items-center justify-center font-bold text-[12.5px] shrink-0 transition-opacity hover:opacity-70"
+                  style={{ border: `1px solid ${C.border}`, backgroundColor: C.card, color: C.text }}
+                >B</button>
+                <span className="text-[11px]" style={{ color: C.mutedSoft }}>Matnni belgilab "B" ni bosing — qalinlashadi. Hohlagancha uzun yozishingiz mumkin.</span>
+              </div>
+              <div className="flex gap-2 items-end">
+                <textarea
+                  ref={(el) => { draftRefs.current[draftKey] = el; if (el) autoGrowTextarea(el); }}
+                  value={qDraft[draftKey] || ""}
+                  onChange={(e) => { setQDraft((d) => ({ ...d, [draftKey]: e.target.value })); autoGrowTextarea(e.target); }}
+                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startAddQuestion(key, partId, part ? partMode : undefined); } }}
+                  placeholder="Savol matnini kiriting... (Enter — qo'shish, Shift+Enter — yangi qator)"
+                  rows={1}
+                  className="flex-1 rounded-lg text-[13px] outline-none px-3 py-2 resize-none"
+                  style={{ border: `1.5px solid ${C.border}`, backgroundColor: C.paper, minHeight: 40, maxHeight: 260, overflowY: "auto", lineHeight: 1.4 }}
+                />
+                <Button size="sm" variant="subtle" icon="plus" onClick={() => startAddQuestion(key, partId, part ? partMode : undefined)}>Qo'shish</Button>
+              </div>
             </div>
           </div>
         );
@@ -5267,7 +5339,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
               <div key={q.id} id={`q-${sectionKey}-${q.id}`}>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="text-[13.5px] font-semibold" style={{ color: C.text }}>
-                    {startNumber + i + 1}.{q.q ? ` ${q.q}` : ""}
+                    {startNumber + i + 1}.{q.q ? <> <RichText text={q.q} /></> : ""}
                     {q.answerType === "multi" && <span className="ml-1.5 text-[11px] font-normal italic" style={{ color: C.mutedSoft }}>(bir nechta javobni tanlang)</span>}
                   </div>
                   {onToggleFlag && (
@@ -6217,7 +6289,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       return (
         <div className="rounded-xl p-3.5" style={{ border: `1.5px solid ${styles.border}`, backgroundColor: styles.bg }}>
           <div className="flex items-start justify-between gap-2 mb-1.5">
-            <div className="text-[13.5px] font-semibold" style={{ color: C.text }}>{q.index}. {questionText}</div>
+            <div className="text-[13.5px] font-semibold" style={{ color: C.text }}>{q.index}. <RichText text={questionText} /></div>
             <Icon name={styles.icon} size={16} style={{ color: styles.fg }} className="shrink-0 mt-0.5" />
           </div>
           <div className="text-[13px]" style={{ color: styles.fg }}>
