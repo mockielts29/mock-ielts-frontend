@@ -5282,13 +5282,13 @@
                 <div className="space-y-1.5">
                   {q.answerType === "text" ? (
                     q.parts && q.parts.some((p) => p.type === "blank") ? (
-                      <div className="flex flex-wrap items-center gap-x-1.5 gap-y-2 text-[14px] leading-loose" style={{ color: C.text }}>
+                      <div className="text-[14px] leading-loose" style={{ color: C.text, whiteSpace: "pre-wrap", wordBreak: "break-word" }}>
                         {q.parts.map((p, pi) => p.type === "blank" ? (
                           <input
                             key={p.id}
                             value={(answers[q.id] && answers[q.id][p.id]) || ""}
                             onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: { ...(a[q.id] || {}), [p.id]: clampToSingleWord(e.target.value, p.correct) } }))}
-                            className="inline-block rounded-md px-2 py-1 text-[13.5px] outline-none text-center"
+                            className="inline-block align-middle mx-1 rounded-md px-2 py-1 text-[13.5px] outline-none text-center"
                             style={{
                               width: 130,
                               border: `1.5px solid ${((answers[q.id] || {})[p.id] || "").trim() ? C.teal : C.border}`,
@@ -5297,7 +5297,7 @@
                             }}
                           />
                         ) : (
-                          <span key={pi} style={{ whiteSpace: "pre-wrap" }}>{p.value}</span>
+                          <span key={pi}>{p.value}</span>
                         ))}
                       </div>
                     ) : (
