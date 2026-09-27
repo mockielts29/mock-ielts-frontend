@@ -5565,6 +5565,17 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
             setLoaded(true);
           } catch (e) {
             if (cancelled) return;
+            /* Agar server "bu examni allaqachon topshirgansiz" desa (backend
+               endi buni ExamViewSet.start()'da tekshiradi) — bu ODATIY
+               tarmoq xatosi emas, balki aniq holat: qayta-qayta urinish
+               ma'nosiz, aksincha talabani darhol chiqarib, aniq xabar
+               ko'rsatish kerak, aks holda pastdagi "qaytadan urinish"
+               tsikli abadiy aylanaverardi. */
+            if (String(e.message || "").includes("allaqachon topshirgansiz")) {
+              toast("error", "Siz bu mock examni allaqachon topshirgansiz.");
+              onExit();
+              return;
+            }
             /* MUHIM TUZATISH: oldin bu yerda xato bo'lsa ham setLoaded(true)
                chaqirilardi ("finally" bloki orqali) — natijada imtihon
                backend'da HECH QANDAY ExamAttempt yaratilmagan holda
