@@ -3578,37 +3578,87 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         [next[idx], next[target]] = [next[target], next[idx]];
         return next;
       });
-      const addQuestionOfType = (sectionKey, partId, text, answerType, matchType) => {
+      const addQuestionOfType = (sectionKey, partId, text, answerType, draft) => {
+        const d = draft || {};
         const newQ = answerType === "text"
           ? { id: uid("q"), q: "", answerType: "text", parts: [{ type: "text", value: text }] }
           : answerType === "multi"
-            ? { id: uid("q"), q: text, answerType: "multi", options: defaultOptions(), correctIndexes: [0] }
+            ? { id: uid("q"), q: text, answerType: "multi", options: (d.options && d.options.length ? d.options : defaultOptions()), correctIndexes: (d.correctIndexes && d.correctIndexes.length ? d.correctIndexes : [0]) }
             : answerType === "matching"
-              ? { id: uid("q"), q: text, answerType: "matching", matchType: matchType || "information", options: sections.reading.paragraphs.map((p) => p.label), correctIndex: 0 }
-              : { id: uid("q"), q: text, answerType: "mcq", options: defaultOptions(), correctIndex: 0 };
+              ? { id: uid("q"), q: text, answerType: "matching", matchType: "information", options: sections.reading.paragraphs.map((p) => p.label), correctIndex: d.correctIndex ?? 0 }
+              : { id: uid("q"), q: text, answerType: "mcq", options: (d.options && d.options.length ? d.options : defaultOptions()), correctIndex: d.correctIndex ?? 0 };
         updateQuestions(sectionKey, (qs) => [...qs, newQ], partId);
       };
 
       /* Javob turi endi HAR DOIM oldindan tanlangan bo'ladi (partMode — listening
          part'lari uchun, yoki qType — reading/vocabulary uchun) — shuning uchun
-         bu funksiya faqat forcedType mavjud bo'lganda savolni qo'shadi. */
+         bu funksiya faqat forcedType mavjud bo'lganda savolni qo'shadi. Variantlar
+         (options/to'g'ri javob) ham savol matni bilan BIR VAQTDA, pastdagi draft
+         holatidan (qOptDraft) olib to'ldiriladi — qo'shilgandan keyin savol matnini
+         alohida ochib variantlarni to'ldirish shart emas. */
       const startAddQuestion = (sectionKey, partId, forcedType) => {
         const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
         const text = (qDraft[draftKey] || "").trim();
         if (!text || !forcedType) return;
-        addQuestionOfType(sectionKey, partId, text, forcedType);
+        addQuestionOfType(sectionKey, partId, text, forcedType, getOptDraft(draftKey, forcedType));
         setQDraft((d) => ({ ...d, [draftKey]: "" }));
+        setQOptDraft((d) => ({ ...d, [draftKey]: freshOptionDraft(forcedType) }));
       };
       /* Reading/Vocabulary uchun: avval javob turini tanlaydi (savol matni hali bo'sh) —
          tanlangan tur draftKey bo'yicha eslab qolinadi, matn keyin pastdagi maydonga yoziladi. */
       const chooseQType = (sectionKey, partId, answerType) => {
         const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
         setQType((t) => ({ ...t, [draftKey]: answerType }));
+        setQOptDraft((d) => ({ ...d, [draftKey]: freshOptionDraft(answerType) }));
       };
       const resetQType = (sectionKey, partId) => {
         const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
         setQType((t) => ({ ...t, [draftKey]: null }));
+        setQOptDraft((d) => ({ ...d, [draftKey]: undefined }));
       };
+
+      /* Savol matni bilan BIRGA to'ldiriladigan variantlar/to'g'ri javob qoralamasi —
+         "Qo'shish" bosilganda addQuestionOfType shu holatdan foydalanadi, so'ng har bir
+         draftKey uchun yangi (bo'sh) qoralamaga qaytariladi. */
+      const freshOptionDraft = (type) => (
+        type === "multi" ? { options: defaultOptions(), correctIndexes: [0] }
+          : type === "matching" ? { correctIndex: 0 }
+            : type === "text" ? {}
+              : { options: defaultOptions(), correctIndex: 0 } // mcq / image
+      );
+      const getOptDraft = (draftKey, type) => qOptDraft[draftKey] || freshOptionDraft(type);
+      const setDraftOptionText = (draftKey, type, idx, val) => setQOptDraft((d) => {
+        const cur = d[draftKey] || freshOptionDraft(type);
+        return { ...d, [draftKey]: { ...cur, options: cur.options.map((o, i) => (i === idx ? val : o)) } };
+      });
+      const setDraftCorrectIndex = (draftKey, type, idx) => setQOptDraft((d) => {
+        const cur = d[draftKey] || freshOptionDraft(type);
+        return { ...d, [draftKey]: { ...cur, correctIndex: idx } };
+      });
+      const toggleDraftCorrectIndex = (draftKey, type, idx) => setQOptDraft((d) => {
+        const cur = d[draftKey] || freshOptionDraft(type);
+        const curIdxs = cur.correctIndexes || [];
+        const next = curIdxs.includes(idx) ? curIdxs.filter((v) => v !== idx) : [...curIdxs, idx].sort();
+        return { ...d, [draftKey]: { ...cur, correctIndexes: next.length ? next : curIdxs } };
+      });
+      const addDraftOption = (draftKey, type) => setQOptDraft((d) => {
+        const cur = d[draftKey] || freshOptionDraft(type);
+        const nextLabel = OPTION_LETTERS[cur.options.length] || String(cur.options.length + 1);
+        return { ...d, [draftKey]: { ...cur, options: [...cur.options, `Variant ${nextLabel}`] } };
+      });
+      const removeDraftOption = (draftKey, type, idx) => setQOptDraft((d) => {
+        const cur = d[draftKey] || freshOptionDraft(type);
+        if (cur.options.length <= MIN_OPTIONS) return d;
+        const options = cur.options.filter((_, i) => i !== idx);
+        if (type === "multi") {
+          const correctIndexes = (cur.correctIndexes || []).filter((i) => i !== idx).map((i) => (i > idx ? i - 1 : i));
+          return { ...d, [draftKey]: { ...cur, options, correctIndexes: correctIndexes.length ? correctIndexes : [0] } };
+        }
+        let correctIndex = cur.correctIndex;
+        if (correctIndex === idx) correctIndex = 0;
+        else if (correctIndex > idx) correctIndex -= 1;
+        return { ...d, [draftKey]: { ...cur, options, correctIndex } };
+      });
 
       const removeQuestion = (sectionKey, qid, partId) => updateQuestions(sectionKey, (qs) => qs.filter((q) => q.id !== qid), partId);
       const setOption = (sectionKey, qid, idx, val, partId) => updateQuestions(sectionKey, (qs) => qs.map((q) => (q.id === qid ? { ...q, options: q.options.map((o, i) => (i === idx ? val : o)) } : q)), partId);
@@ -3681,6 +3731,11 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
            javobli / "text" — matnli) bir marta tanlanadi va o'sha part uchun saqlanib qoladi. */
         const inferMode = (q) => (q.answerType === "text" ? "text" : q.answerType === "multi" ? "multi" : "mcq");
         const partMode = part ? (part.mode || (part.questions.length ? inferMode(part.questions[0]) : null)) : null;
+        /* Joriy qo'shilayotgan savol turi: Listening'da partMode, boshqa bo'limlarda
+           tanlangan selectedType. "image" part'i ham oddiy variantli (mcq) savol kabi
+           ishlaydi — shuning uchun variantlar qoralamasi uchun "mcq"ga tenglashtiriladi. */
+        const entryType = part ? partMode : selectedType;
+        const optDraftType = entryType === "image" ? "mcq" : entryType;
         if (part) {
           if (!partMode) {
             return (
@@ -3873,6 +3928,47 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                   />
                   <Button size="sm" variant="subtle" icon="plus" onClick={() => startAddQuestion(key, partId, part ? partMode : selectedType)}>Qo'shish</Button>
                 </div>
+                {/* Savol matni bilan BIR QATORDA — variantlar/to'g'ri javob ham shu yerda
+                    to'ldiriladi, "Qo'shish" bosilganda hammasi birga qo'shiladi. */}
+                {(optDraftType === "mcq" || optDraftType === "multi") && (
+                  <div className="space-y-1.5 rounded-lg p-2.5" style={{ backgroundColor: C.paperDim }}>
+                    <div className="text-[11px] font-semibold" style={{ color: C.mutedSoft }}>Variantlar — to'g'ri javobni belgilang:</div>
+                    {getOptDraft(draftKey, optDraftType).options.map((o, idx) => (
+                      <div key={idx} className="flex items-center gap-1.5 text-[12px]">
+                        {optDraftType === "multi" ? (
+                          <input type="checkbox" checked={(getOptDraft(draftKey, optDraftType).correctIndexes || []).includes(idx)} onChange={() => toggleDraftCorrectIndex(draftKey, optDraftType, idx)} />
+                        ) : (
+                          <input type="radio" checked={getOptDraft(draftKey, optDraftType).correctIndex === idx} onChange={() => setDraftCorrectIndex(draftKey, optDraftType, idx)} />
+                        )}
+                        <input value={o} onChange={(e) => setDraftOptionText(draftKey, optDraftType, idx, e.target.value)} className="flex-1 rounded px-1.5 py-1 text-[12px] outline-none" style={{ border: `1px solid ${C.border}`, backgroundColor: C.card }} />
+                        {getOptDraft(draftKey, optDraftType).options.length > MIN_OPTIONS && (
+                          <button type="button" onClick={() => removeDraftOption(draftKey, optDraftType, idx)} title="Variantni o'chirish">
+                            <Icon name="xmark" size={12} style={{ color: C.mutedSoft }} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    <button type="button" onClick={() => addDraftOption(draftKey, optDraftType)} className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: C.teal }}>
+                      <Icon name="plus" size={11} /> Javob qo'shish
+                    </button>
+                  </div>
+                )}
+                {optDraftType === "matching" && (
+                  canPickMatching ? (
+                    <div className="space-y-1.5 rounded-lg p-2.5" style={{ backgroundColor: C.paperDim }}>
+                      <div className="text-[11px] font-semibold" style={{ color: C.mutedSoft }}>To'g'ri paragrafni tanlang:</div>
+                      {sections.reading.paragraphs.map((p, idx) => (
+                        <label key={p.id} className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+                          <input type="radio" checked={getOptDraft(draftKey, "matching").correctIndex === idx} onChange={() => setDraftCorrectIndex(draftKey, "matching", idx)} />
+                          <span className="font-bold w-5 text-center" style={{ color: C.tealDeep }}>{p.label}</span>
+                          <span className="flex-1 truncate" style={{ color: C.mutedSoft }}>{(p.text || "").slice(0, 60)}</span>
+                        </label>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="text-[11.5px] italic" style={{ color: C.mutedSoft }}>Moslashtirish uchun avval "Paragraflar" bo'limini to'ldiring.</div>
+                  )
+                )}
               </div>
             )}
           </div>
