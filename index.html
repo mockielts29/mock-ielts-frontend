@@ -3196,8 +3196,10 @@
     /* Listening bo'limi Part1/Part2... tuzilmasida saqlanadi. Eski (parts'siz,
        flat questions) mock'lar bilan orqaga moslik uchun fallback. */
     function getListeningParts(listening) {
-      if (listening.parts) return listening.parts;
-      return [{ id: "legacy", title: "Part 1", questions: listening.questions || [] }];
+      const parts = listening.parts || [{ id: "legacy", title: "Part 1", questions: listening.questions || [] }];
+      // Eski mock'larda audio bitta bo'lim darajasida saqlangan edi — part'ning o'zida
+      // audio bo'lmasa, orqaga moslik uchun o'sha eski audiodan foydalaniladi.
+      return parts.map((p) => ({ ...p, audioUrl: p.audioUrl || listening.audioUrl || "" }));
     }
 
     /* Writing bo'limi endi Task 1 / Task 2'ga bo'lingan holda saqlanadi. Eski (flat
@@ -3215,20 +3217,17 @@
 
     /* Har qanday bo'lim uchun (listening — part'lar bo'ylab yig'ilgan holda)
        savollarning yagona ro'yxatini qaytaradi — scoring, review, navigator uchun. */
-    function flattenSectionQuestions(exam, key) {
-      if (key === "listening") {
-        return getListeningParts(exam.sections.listening).flatMap((p) => {
-          if (!p.imageUrl || !p.questions.length) return p.questions;
-          // "Rasmli" part — part darajasidagi rasm (masalan xarita/diagramma) shu
-          // partning birinchi savoliga bog'lanadi, shunda MCQBlock buni oddiy savol
-          // rasmi kabi (bir marta, part boshida) ko'rsatadi — alohida render logikasi
-          // shart emas. Savolning o'zida allaqachon rasm bo'lsa, unga tegilmaydi.
-          const [first, ...rest] = p.questions;
-          return [first.imageUrl ? first : { ...first, imageUrl: p.imageUrl, imageName: p.imageName, imageMime: p.imageMime }, ...rest];
-        });
+      function listeningPartQuestions(p) {
+        if (!p.imageUrl || !p.questions.length) return p.questions;
+        const [first, ...rest] = p.questions;
+        return [first.imageUrl ? first : { ...first, imageUrl: p.imageUrl, imageName: p.imageName, imageMime: p.imageMime }, ...rest];
       }
-      return exam.sections[key]?.questions || [];
-    }
+      function flattenSectionQuestions(exam, key) {
+        if (key === "listening") {
+          return getListeningParts(exam.sections.listening).flatMap(listeningPartQuestions);
+        }
+        return exam.sections[key]?.questions || [];
+      }
 
     /* Matnli savol qismlarini (parts) o'quvchiga ko'rinadigan matn shakliga aylantiradi — bo'sh joylar "____" bilan. */
     function partsToPreview(parts) {
@@ -3438,7 +3437,7 @@
       const toggleSection = (key) => setSections((s) => ({ ...s, [key]: { ...s[key], enabled: !s[key].enabled } }));
 
       /* Listening — Part1/Part2... boshqaruvi */
-      const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, parts: [...s.listening.parts, { id: uid("part"), title: `Part ${s.listening.parts.length + 1}`, questions: [] }] } }));
+const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, parts: [...s.listening.parts, { id: uid("part"), title: `Part ${s.listening.parts.length + 1}`, questions: [], audioUrl: "" }] } }));
       const removePart = (partId) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.filter((p) => p.id !== partId) } }));
       const renamePart = (partId, val) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, title: val } : p)) } }));
       /* Partning javob turi — "mcq" (variantli/ABC) yoki "text" (matnli/bo'sh joyli). Bir marta tanlanadi. */
@@ -3446,7 +3445,9 @@
       /* "Rasmli" part turi uchun — butun part bitta umumiy rasmga (masalan xarita/
          diagramma) tegishli bo'ladi, pastidagi savollar esa shu rasmga qarab javoblanadi
          (IELTS Listening'dagi "label the map"/"label the plan" turidagi qismlar kabi). */
-      const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
+const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
+/* Har bir listening part'i endi o'zining alohida audio faylini olishi mumkin. */
+const setPartAudio = (partId, url) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, audioUrl: url } : p)) } }));const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
 
       /* Savollarni sectionKey (va listening uchun partId) bo'yicha umumiy tarzda yangilash */
       const updateQuestions = (sectionKey, updater, partId) => {
@@ -3712,7 +3713,8 @@
         if (!s.enabled) return "O'chirilgan";
         if (key === "listening") {
           const total = s.parts.reduce((sum, p) => sum + p.questions.length, 0);
-          return total ? `${total} ta savol, ${s.parts.length} ta part${s.audioUrl ? ", audio bor" : ""}` : "Savollar kiritilmagan";
+          const audioCount = s.parts.filter((p) => p.audioUrl).length;
+          return total ? `${total} ta savol, ${s.parts.length} ta part${audioCount ? ` (${audioCount} tasida audio)` : ""}` : "Savollar kiritilmagan";
         }
         if (key === "reading") return s.passage.trim() ? `${s.questions.length} ta savol, matn bor` : "Matn kiritilmagan";
         if (key === "writing") {
@@ -3728,12 +3730,11 @@
         if (key === "listening") {
           return (
             <>
-              <AudioDropInput label="Audio fayl (ixtiyoriy)" value={sections.listening.audioUrl} onChange={(v) => setSections((s) => ({ ...s, listening: { ...s.listening, audioUrl: v } }))} />
               <TextArea label="Yo'riqnoma" rows={2} value={sections.listening.instructions} onChange={(v) => setSections((s) => ({ ...s, listening: { ...s.listening, instructions: v } }))} />
               <div className="space-y-4">
                 {sections.listening.parts.map((part) => (
-                  <div key={part.id} className="rounded-xl p-3" style={{ border: `1px solid ${C.borderSoft}` }}>
-                    <div className="flex items-center gap-2 mb-2">
+                  <div key={part.id} className="rounded-xl p-3 space-y-3" style={{ border: `1px solid ${C.borderSoft}` }}>
+                    <div className="flex items-center gap-2">
                       <input
                         value={part.title}
                         onChange={(e) => renamePart(part.id, e.target.value)}
@@ -3744,6 +3745,7 @@
                         <button onClick={() => removePart(part.id)} title="Partni o'chirish"><Icon name="trash" size={13} style={{ color: C.mutedSoft }} /></button>
                       )}
                     </div>
+                    <AudioDropInput label={`${part.title} — audio fayl (ixtiyoriy)`} value={part.audioUrl} onChange={(v) => setPartAudio(part.id, v)} />
                     {questionSection("listening", part.id)}
                   </div>
                 ))}
@@ -5255,7 +5257,8 @@
       );
     }
 
-    function MCQBlock({ sectionKey, questions, answers, setAnswers, flagged, onToggleFlag }) {
+    function MCQBlock({ sectionKey, questions, answers, setAnswers, flagged, onToggleFlag, numberOffset }) {
+      const startNumber = numberOffset || 0;
       return (
         <div className="space-y-4">
           {(questions || []).map((q, i) => {
@@ -5265,7 +5268,7 @@
               <div key={q.id} id={`q-${sectionKey}-${q.id}`}>
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="text-[13.5px] font-semibold" style={{ color: C.text }}>
-                    {i + 1}.{q.q ? ` ${q.q}` : ""}
+                    {startNumber + i + 1}.{q.q ? ` ${q.q}` : ""}
                     {q.answerType === "multi" && <span className="ml-1.5 text-[11px] font-normal italic" style={{ color: C.mutedSoft }}>(bir nechta javobni tanlang)</span>}
                   </div>
                   {onToggleFlag && (
@@ -5443,6 +5446,7 @@
       const [answers, setAnswers] = useState({ listening: {}, reading: {}, vocabulary: {} });
       const [writingText, setWritingText] = useState({ task1: "", task2: "" });
       const [writingTask, setWritingTask] = useState(1); // 1 yoki 2 — Writing bo'limi ichidagi ikki task orasidagi tab
+      const [listeningPartIdx, setListeningPartIdx] = useState(0); // Listening bo'limi ichidagi part'lar orasidagi tab
       const [flagged, setFlagged] = useState({});
       const [submitting, setSubmitting] = useState(false);
       const [notepadOpen, setNotepadOpen] = useState(false);
@@ -5462,6 +5466,7 @@
             setAnswers(a.answers && Object.keys(a.answers).length ? a.answers : { listening: {}, reading: {}, vocabulary: {} });
             setWritingText(a.writing_text && (a.writing_text.task1 !== undefined) ? a.writing_text : { task1: "", task2: "" });
             setWritingTask((a.progress_data && a.progress_data.writingTask) || 1);
+            setListeningPartIdx((a.progress_data && a.progress_data.listeningPartIdx) || 0);
             setFlagged(a.flagged || {});
             setNotepadText(a.notepad_text || "");
             setFontLevel(a.font_level != null ? a.font_level : 1);
@@ -5549,7 +5554,7 @@
         notepad_text: notepadText,
         font_level: fontLevel,
         section_deadlines: sectionDeadlines,
-        progress_data: { writingTask },
+        progress_data: { writingTask, listeningPartIdx },
       });
 
       const submit = async () => {
@@ -5675,7 +5680,7 @@
           examApi.saveProgress(exam.id, latestStateRef.current).catch(() => { });
         }, 1200);
         return () => clearTimeout(saveTimerRef.current);
-      }, [loaded, idx, answers, writingText, writingTask, flagged, notepadText, fontLevel, sectionDeadlines]); // eslint-disable-line
+      }, [loaded, idx, answers, writingText, writingTask, listeningPartIdx, flagged, notepadText, fontLevel, sectionDeadlines]); // eslint-disable-line
 
       /* Komponent yo'q qilinganda (chiqishda) so'nggi holatni darhol (debounce'siz)
          yuboramiz — aks holda oxirgi 1.2 soniyadagi o'zgarish yo'qolib qolishi mumkin. */
@@ -5696,6 +5701,9 @@
       }, []);
 
       const writing = normalizeWriting(exam.sections.writing);
+      const listeningParts = getListeningParts(exam.sections.listening);
+      const currentListeningPart = listeningParts[Math.min(listeningPartIdx, listeningParts.length - 1)] || listeningParts[0];
+      const listeningNumberOffset = listeningParts.slice(0, listeningParts.indexOf(currentListeningPart)).reduce((sum, p) => sum + listeningPartQuestions(p).length, 0);
       const countWords = (t) => (t || "").trim().split(/\s+/).filter(Boolean).length;
       const wordCount1 = countWords(writingText.task1);
       const wordCount2 = countWords(writingText.task2);
@@ -5759,9 +5767,9 @@
             )}
             {!isReview && (
               <div className="rounded-xl p-3 mb-3 shrink-0" style={{ backgroundColor: C.card, border: `1px solid ${C.borderSoft}` }}>
-                <div className="font-semibold text-[14px] mb-1" style={{ color: C.ink }}>Part 1</div>
+                <div className="font-semibold text-[14px] mb-1" style={{ color: C.ink }}>{currentKey === "listening" ? currentListeningPart.title : "Part 1"}</div>
                 <div className="text-[13px]" style={{ color: C.muted }}>
-                  {sectionInstructionText(currentKey, currentKey === "writing" ? (writingTask === 1 ? writing.task1.minWords : writing.task2.minWords) : flattenSectionQuestions(exam, currentKey).length)}
+                  {sectionInstructionText(currentKey, currentKey === "writing" ? (writingTask === 1 ? writing.task1.minWords : writing.task2.minWords) : currentKey === "listening" ? listeningPartQuestions(currentListeningPart).length : flattenSectionQuestions(exam, currentKey).length)}
                 </div>
               </div>
             )}
@@ -5785,11 +5793,29 @@
               >
                 {currentKey === "listening" && (
                   <div className="space-y-4">
-                    {exam.sections.listening.audioUrl ? (
+                    {listeningParts.length > 1 && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {listeningParts.map((part, pi) => (
+                          <button
+                            key={part.id}
+                            onClick={() => setListeningPartIdx(pi)}
+                            className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-colors"
+                            style={{
+                              border: `1.5px solid ${listeningPartIdx === pi ? C.teal : C.border}`,
+                              backgroundColor: listeningPartIdx === pi ? C.tealSoft : C.card,
+                              color: listeningPartIdx === pi ? C.tealDeep : C.muted,
+                            }}
+                          >
+                            {part.title}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                    {currentListeningPart.audioUrl ? (
                       <div className="flex items-center gap-2 rounded-lg p-3" style={{ backgroundColor: C.paperDim }}>
                         <Icon name="volume-high" size={16} style={{ color: C.teal }} />
-                        <audio controls src={exam.sections.listening.audioUrl} className="w-full" />
-                        <a href={exam.sections.listening.audioUrl} download="listening-audio.mp3" title="Audioni yuklab olish" className="shrink-0 p-1.5 rounded-lg" style={{ color: C.teal }}>
+                        <audio controls src={currentListeningPart.audioUrl} className="w-full" />
+                        <a href={currentListeningPart.audioUrl} download="listening-audio.mp3" title="Audioni yuklab olish" className="shrink-0 p-1.5 rounded-lg" style={{ color: C.teal }}>
                           <Icon name="download" size={15} />
                         </a>
                       </div>
@@ -5799,7 +5825,7 @@
                       </div>
                     )}
                     <p className="text-[13px]" style={{ color: C.muted }}>{exam.sections.listening.instructions}</p>
-                    <MCQBlock sectionKey="listening" questions={flattenSectionQuestions(exam, "listening")} answers={answers.listening} setAnswers={(fn) => setAnswers((a) => ({ ...a, listening: fn(a.listening) }))} flagged={flagged} onToggleFlag={toggleFlag} />
+                    <MCQBlock sectionKey="listening" questions={listeningPartQuestions(currentListeningPart)} numberOffset={listeningNumberOffset} answers={answers.listening} setAnswers={(fn) => setAnswers((a) => ({ ...a, listening: fn(a.listening) }))} flagged={flagged} onToggleFlag={toggleFlag} />
                   </div>
                 )}
                 {currentKey === "reading" && (
@@ -5879,8 +5905,19 @@
                   answers={answers[currentKey]}
                   flagged={flagged}
                   onJump={(qid) => {
-                    const el = document.getElementById(`q-${currentKey}-${qid}`);
-                    if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    const scroll = () => {
+                      const el = document.getElementById(`q-${currentKey}-${qid}`);
+                      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+                    };
+                    if (currentKey === "listening") {
+                      const targetPartIdx = listeningParts.findIndex((p) => p.questions.some((q) => q.id === qid));
+                      if (targetPartIdx !== -1 && targetPartIdx !== listeningPartIdx) {
+                        setListeningPartIdx(targetPartIdx);
+                        setTimeout(scroll, 50);
+                        return;
+                      }
+                    }
+                    scroll();
                   }}
                 />
               )}
