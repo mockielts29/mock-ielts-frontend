@@ -5376,11 +5376,15 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                             key={p.id}
                             value={(answers[q.id] && answers[q.id][p.id]) || ""}
                             onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: { ...(a[q.id] || {}), [p.id]: clampToSingleWord(e.target.value, p.correct) } }))}
-                            className="inline-block align-middle mx-0.5 rounded-md px-1.5 py-0.5 text-[12.5px] outline-none text-center"
+                            className="inline-block align-baseline mx-1 rounded-md px-1.5 outline-none text-center f-body"
                             style={{
-                              width: 92,
-                              height: 26,
-                              lineHeight: "1.2",
+                              width: 96,
+                              height: 24,
+                              fontSize: "14px",
+                              lineHeight: "1.4",
+                              verticalAlign: "baseline",
+                              position: "relative",
+                              top: 4,
                               border: `1.5px solid ${((answers[q.id] || {})[p.id] || "").trim() ? C.teal : C.border}`,
                               backgroundColor: ((answers[q.id] || {})[p.id] || "").trim() ? C.tealSoft : C.paper,
                               color: C.text,
