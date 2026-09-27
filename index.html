@@ -3251,21 +3251,29 @@
       return (parts || []).map((p) => (p.type === "blank" ? "____" : p.value)).join("");
     }
 
+    /* Bitta "to'g'ri javob" maydonida bir nechta qabul qilinadigan variant "|" bilan
+       ajratilishi mumkin (masalan "colour|color") — Sentence/Summary/Note/Table
+       Completion va Short Answer savollarida ko'p yoziladigan imlo farqlari uchun.
+       Orqaga moslik: "|" bo'lmasa, xatti-harakat avvalgidek (bitta variant). */
+    function acceptableAnswers(raw) {
+      return (raw || "").toString().split("|").map((v) => v.trim().toLowerCase()).filter(Boolean);
+    }
+
     /* Matnli savolning barcha bo'sh joylariga (blanklariga) berilgan javob to'g'rimi — parts mavjud bo'lsa
        har bir blank alohida tekshiriladi (hammasi to'g'ri bo'lishi kerak), aks holda eski (bitta maydon)
        correctText bilan orqaga moslik saqlanadi. */
     function isTextAnswerCorrect(q, given) {
       const blanks = (q.parts || []).filter((p) => p.type === "blank");
       if (!blanks.length) {
-        const expected = (q.correctText || "").toString().trim().toLowerCase();
+        const expected = acceptableAnswers(q.correctText);
         const actual = (given || "").toString().trim().toLowerCase();
-        return !!expected && actual === expected;
+        return expected.length > 0 && expected.includes(actual);
       }
       const g = given && typeof given === "object" ? given : {};
       return blanks.every((b) => {
-        const expected = (b.correct || "").toString().trim().toLowerCase();
+        const expected = acceptableAnswers(b.correct);
         const actual = (g[b.id] || "").toString().trim().toLowerCase();
-        return !!expected && actual === expected;
+        return expected.length > 0 && expected.includes(actual);
       });
     }
 
@@ -3316,9 +3324,10 @@
     }
 
     /* Kutilayotgan to'g'ri javob bitta so'zdanmi (ichida bo'shliq yo'qmi) — shu bo'lsa,
-       o'quvchi mock ishlayotganda javob maydoniga bo'shliq kiritib, 2-so'z yoza olmaydi. */
+       o'quvchi mock ishlayotganda javob maydoniga bo'shliq kiritib, 2-so'z yoza olmaydi.
+       "|" bilan bir nechta variant kiritilgan bo'lsa, faqat birinchisi (asosiy) tekshiriladi. */
     function isSingleWordExpected(correct) {
-      const t = (correct || "").toString().trim();
+      const t = ((correct || "").toString().split("|")[0] || "").trim();
       return t !== "" && !/\s/.test(t);
     }
     /* Javob maydoniga yozilayotgan qiymatni, agar to'g'ri javob bitta so'z bo'lsa, bitta so'zga cheklaydi. */
@@ -3417,7 +3426,7 @@
                     ref={(el) => (blankRefs.current[b.id] = el)}
                     value={b.correct}
                     onChange={(e) => updateBlankCorrect(b.id, e.target.value)}
-                    placeholder="to'g'ri javob (bitta so'z tavsiya etiladi)"
+                    placeholder="to'g'ri javob (masalan: colour|color — bir nechta variant uchun | bilan ajrating)"
                     className="flex-1 rounded px-2 py-1 text-[12.5px] outline-none"
                     style={{ border: `1px solid ${C.teal}`, backgroundColor: C.tealSoft, color: C.tealDeep }}
                   />
@@ -3440,11 +3449,11 @@
       const [sections, setSections] = useState(() => {
         const base = initialExam?.sections || {
           listening: { enabled: true, audioUrl: "", instructions: "", parts: [{ id: uid("part"), title: "Part 1", questions: [] }] },
-          reading: { enabled: true, instructions: "", passage: "", questions: [] },
+          reading: { enabled: true, instructions: "", passage: "", paragraphs: [], questions: [] },
           writing: { enabled: true, task1: { prompt: "", imageUrl: "", imageName: "", imageMime: "", minWords: 150 }, task2: { prompt: "", minWords: 250 } },
           vocabulary: { enabled: true, questions: [] },
         };
-        return { ...base, listening: { ...base.listening, parts: getListeningParts(base.listening) }, writing: normalizeWriting(base.writing) };
+        return { ...base, listening: { ...base.listening, parts: getListeningParts(base.listening) }, reading: { ...base.reading, paragraphs: base.reading.paragraphs || [] }, writing: normalizeWriting(base.writing) };
       });
       const [qDraft, setQDraft] = useState({ listening: "", reading: "", vocabulary: "" });
       const [pendingQuestion, setPendingQuestion] = useState(null); // { sectionKey, partId, text }
@@ -3533,12 +3542,47 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const OPTION_LETTERS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
       const DEFAULT_OPTION_COUNT = 3;
       const defaultOptions = () => Array.from({ length: DEFAULT_OPTION_COUNT }, (_, i) => `Variant ${OPTION_LETTERS[i]}`);
-      const addQuestionOfType = (sectionKey, partId, text, answerType) => {
+      /* Reading — "Matching" savollari (Matching Headings/Information/Features) uchun
+         paragraflar ro'yxati. Har bir paragraf {id, label, text} ko'rinishida saqlanadi;
+         label har doim avtomatik A, B, C... tartibida qayta hisoblanadi (dinamik —
+         A-H bilan cheklanmaydi, xohlagancha paragraf qo'shish mumkin). */
+      const relabelParagraphs = (paragraphs) => paragraphs.map((p, i) => ({ ...p, label: OPTION_LETTERS[i] || String(i + 1) }));
+      /* Matching savollarining `options`ini joriy paragraf harflariga moslab qayta
+         hisoblaydi va `correctIndex`ni paragraflar sonidan oshib ketmasligini ta'minlaydi —
+         paragraf qo'shilganda/o'chirilganda barcha matching savollar avtomatik sinxronlanadi. */
+      const syncMatchingQuestions = (readingSection) => {
+        const labels = readingSection.paragraphs.map((p) => p.label);
+        return {
+          ...readingSection,
+          questions: readingSection.questions.map((q) => (
+            q.answerType === "matching"
+              ? { ...q, options: labels, correctIndex: Math.min(q.correctIndex || 0, Math.max(labels.length - 1, 0)) }
+              : q
+          )),
+        };
+      };
+      const setReadingParagraphs = (updater) => setSections((s) => ({
+        ...s,
+        reading: syncMatchingQuestions({ ...s.reading, paragraphs: relabelParagraphs(updater(s.reading.paragraphs)) }),
+      }));
+      const addParagraph = () => setReadingParagraphs((ps) => [...ps, { id: uid("para"), label: "", text: "" }]);
+      const removeParagraph = (id) => setReadingParagraphs((ps) => ps.filter((p) => p.id !== id));
+      const setParagraphText = (id, text) => setReadingParagraphs((ps) => ps.map((p) => (p.id === id ? { ...p, text } : p)));
+      const moveParagraph = (idx, dir) => setReadingParagraphs((ps) => {
+        const next = ps.slice();
+        const target = idx + dir;
+        if (target < 0 || target >= next.length) return ps;
+        [next[idx], next[target]] = [next[target], next[idx]];
+        return next;
+      });
+      const addQuestionOfType = (sectionKey, partId, text, answerType, matchType) => {
         const newQ = answerType === "text"
           ? { id: uid("q"), q: "", answerType: "text", parts: [{ type: "text", value: text }] }
           : answerType === "multi"
             ? { id: uid("q"), q: text, answerType: "multi", options: defaultOptions(), correctIndexes: [0] }
-            : { id: uid("q"), q: text, answerType: "mcq", options: defaultOptions(), correctIndex: 0 };
+            : answerType === "matching"
+              ? { id: uid("q"), q: text, answerType: "matching", matchType: matchType || "information", options: sections.reading.paragraphs.map((p) => p.label), correctIndex: 0 }
+              : { id: uid("q"), q: text, answerType: "mcq", options: defaultOptions(), correctIndex: 0 };
         updateQuestions(sectionKey, (qs) => [...qs, newQ], partId);
       };
 
@@ -3553,10 +3597,10 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         }
         setPendingQuestion({ sectionKey, partId, text });
       };
-      const confirmAddQuestion = (answerType) => {
+      const confirmAddQuestion = (answerType, matchType) => {
         if (!pendingQuestion) return;
         const { sectionKey, partId, text } = pendingQuestion;
-        addQuestionOfType(sectionKey, partId, text, answerType);
+        addQuestionOfType(sectionKey, partId, text, answerType, matchType);
         const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
         setQDraft((d) => ({ ...d, [draftKey]: "" }));
         setPendingQuestion(null);
@@ -3706,7 +3750,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                       <input
                         value={q.correctText || ""}
                         onChange={(e) => setCorrectText(key, q.id, e.target.value, partId)}
-                        placeholder="To'g'ri javob (matn)..."
+                        placeholder="To'g'ri javob (bir nechta variant uchun | bilan ajrating, masalan: colour|color)..."
                         className="w-full rounded px-2 py-1.5 text-[12.5px] outline-none"
                         style={{ border: `1px solid ${C.border}`, backgroundColor: C.card }}
                       />
@@ -3728,6 +3772,22 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                     <button type="button" onClick={() => addOption(key, q.id, partId)} className="flex items-center gap-1.5 text-[12px] font-semibold" style={{ color: C.teal }}>
                       <Icon name="plus" size={11} /> Javob qo'shish
                     </button>
+                  </div>
+                ) : q.answerType === "matching" ? (
+                  <div className="space-y-1.5 mt-2">
+                    <div className="text-[11.5px]" style={{ color: C.mutedSoft }}>
+                      <span className="font-semibold" style={{ color: C.tealDeep }}>{matchTypeLabel(q.matchType)}</span> — to'g'ri paragrafni tanlang, variantlar "Paragraflar" bo'limi bilan avtomatik sinxron:
+                    </div>
+                    {(q.options || []).map((label, idx) => {
+                      const para = sections.reading.paragraphs[idx];
+                      return (
+                        <label key={idx} className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+                          <input type="radio" checked={q.correctIndex === idx} onChange={() => setCorrect(key, q.id, idx, partId)} />
+                          <span className="font-bold w-5 text-center" style={{ color: C.tealDeep }}>{label}</span>
+                          <span className="flex-1 truncate" style={{ color: C.mutedSoft }}>{para ? para.text.slice(0, 60) : ""}</span>
+                        </label>
+                      );
+                    })}
                   </div>
                 ) : (
                   <div className="space-y-1.5 mt-2">
@@ -3756,6 +3816,17 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                   <Button size="sm" variant="subtle" icon="list-check" onClick={() => confirmAddQuestion("mcq")}>Variantli (MCQ)</Button>
                   <Button size="sm" variant="subtle" icon="square-check" onClick={() => confirmAddQuestion("multi")}>Bir nechta javobli</Button>
                   <Button size="sm" variant="subtle" icon="pen" onClick={() => confirmAddQuestion("text")}>Matn javob</Button>
+                  {key === "reading" && (
+                    sections.reading.paragraphs.length > 0 ? (
+                      <>
+                        <Button size="sm" variant="subtle" icon="heading" onClick={() => confirmAddQuestion("matching", "heading")}>Matching Heading</Button>
+                        <Button size="sm" variant="subtle" icon="diagram-project" onClick={() => confirmAddQuestion("matching", "information")}>Matching Information</Button>
+                        <Button size="sm" variant="subtle" icon="list-ul" onClick={() => confirmAddQuestion("matching", "feature")}>Matching Feature</Button>
+                      </>
+                    ) : (
+                      <span className="text-[11.5px] italic" style={{ color: C.mutedSoft }}>Matching uchun avval "Paragraflar" bo'limini to'ldiring</span>
+                    )
+                  )}
                   <button type="button" onClick={() => setPendingQuestion(null)} className="text-[12px] font-semibold hover:opacity-70 transition-opacity" style={{ color: C.mutedSoft }}>Bekor qilish</button>
                 </div>
               </div>
@@ -3843,6 +3914,36 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           return (
             <>
               <TextArea label="Matn (passage)" rows={5} value={sections.reading.passage} onChange={(v) => setSections((s) => ({ ...s, reading: { ...s.reading, passage: v } }))} hint="Student bu matnni highlighter bilan belgilay oladi" />
+              <div className="rounded-xl p-3.5 space-y-2.5" style={{ border: `1px solid ${C.borderSoft}` }}>
+                <div className="flex items-center justify-between">
+                  <div className="text-[13px] font-bold" style={{ color: C.ink }}>Paragraflar <span className="font-normal" style={{ color: C.mutedSoft }}>(Matching Headings/Information/Features savollari uchun)</span></div>
+                  <Button size="sm" variant="ghost" icon="plus" onClick={addParagraph}>Paragraf qo'shish</Button>
+                </div>
+                {sections.reading.paragraphs.length === 0 ? (
+                  <div className="text-[12px] italic" style={{ color: C.mutedSoft }}>Hozircha paragraf kiritilmagan. Matching savol yaratish uchun matnni bu yerda alohida paragraflarga bo'lib kiriting — har biriga harf (A, B, C...) avtomatik beriladi va son cheklanmagan.</div>
+                ) : sections.reading.paragraphs.map((p, i) => (
+                  <div key={p.id} className="flex items-start gap-2 rounded-lg p-2" style={{ backgroundColor: C.paperDim }}>
+                    <div className="flex flex-col items-center gap-1 shrink-0 pt-1">
+                      <span className="w-7 h-7 rounded-full flex items-center justify-center text-[12.5px] font-bold" style={{ backgroundColor: C.tealSoft, color: C.tealDeep, border: `1.5px solid ${C.teal}` }}>{p.label}</span>
+                      <div className="flex gap-0.5">
+                        <button type="button" disabled={i === 0} onClick={() => moveParagraph(i, -1)} title="Yuqoriga"><Icon name="chevron-up" size={11} style={{ color: i === 0 ? C.borderSoft : C.mutedSoft }} /></button>
+                        <button type="button" disabled={i === sections.reading.paragraphs.length - 1} onClick={() => moveParagraph(i, 1)} title="Pastga"><Icon name="chevron-down" size={11} style={{ color: i === sections.reading.paragraphs.length - 1 ? C.borderSoft : C.mutedSoft }} /></button>
+                      </div>
+                    </div>
+                    <textarea
+                      value={p.text}
+                      onChange={(e) => setParagraphText(p.id, e.target.value)}
+                      placeholder={`Paragraf ${p.label} matni...`}
+                      rows={3}
+                      className="flex-1 rounded-lg px-2.5 py-2 text-[12.5px] outline-none resize-y"
+                      style={{ border: `1px solid ${C.border}`, backgroundColor: C.card, color: C.text }}
+                    />
+                    <button type="button" onClick={() => removeParagraph(p.id)} title="Paragrafni o'chirish" className="shrink-0 pt-1">
+                      <Icon name="trash" size={13} style={{ color: C.mutedSoft }} />
+                    </button>
+                  </div>
+                ))}
+              </div>
               {questionSection("reading")}
             </>
           );
@@ -5164,6 +5265,43 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
     /* ============================================================
        STUDENT — EXAM RUNNER
        ============================================================ */
+    /* Reading passage matnini hisoblaydi — agar paragraflar (Matching savollari uchun)
+       kiritilgan bo'lsa, har bir paragraf harfi bilan birga ko'rsatiladi (mavjud
+       HighlightablePassage — belgilash offset mantig'iga tegmasdan, chunki bu shunchaki
+       bitta uzun matn sifatida beriladi). Paragraf yo'q bo'lsa — eski xatti-harakat davom etadi. */
+    /* Matching savol turlari (Heading/Information/Feature) — faqat ko'rsatish/yo'riqnoma
+       uchun metama'lumot; barchasi bir xil A-H paragraf tanlash mexanizmi bilan ishlaydi. */
+    function matchTypeLabel(matchType) {
+      if (matchType === "heading") return "Matching Heading";
+      if (matchType === "feature") return "Matching Feature";
+      return "Matching Information";
+    }
+
+    function readingPassageText(readingSection) {
+      const paragraphs = readingSection.paragraphs || [];
+      if (!paragraphs.length) return readingSection.passage || "";
+      return paragraphs.map((p) => `${p.label}\n${p.text}`).join("\n\n");
+    }
+
+    /* Real IELTS Reading'dagi "List of Paragraphs" panelidek — passage tepasida
+       A, B, C... harflari va har bir paragrafning boshlanishi qisqacha ko'rsatiladi. */
+    function ListOfParagraphs({ paragraphs }) {
+      return (
+        <div className="rounded-xl p-3 mb-3" style={{ backgroundColor: C.paperDim, border: `1px solid ${C.borderSoft}` }}>
+          <div className="text-[11.5px] font-bold uppercase tracking-wide mb-1.5" style={{ color: C.mutedSoft }}>List of Paragraphs</div>
+          <div className="flex flex-wrap gap-x-4 gap-y-1">
+            {paragraphs.map((p) => (
+              <div key={p.id} className="text-[12px]" style={{ color: C.text }}>
+                <span className="font-bold" style={{ color: C.tealDeep }}>{p.label}</span>
+                {" — "}
+                <span style={{ color: C.mutedSoft }}>{(p.text || "").trim().slice(0, 40) || "(bo'sh)"}{(p.text || "").length > 40 ? "…" : ""}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      );
+    }
+
     function HighlightablePassage({ text }) {
       const [highlights, setHighlights] = useState([]); // array of {id,start,end}
       const [selBtn, setSelBtn] = useState(null); // {x,y,start,end} floating "Highlight" button
@@ -5355,6 +5493,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                   <div className="text-[13.5px] font-semibold" style={{ color: C.text, whiteSpace: "pre-wrap" }}>
                     {startNumber + i + 1}.{q.q ? <> <RichText text={q.q} /></> : ""}
                     {q.answerType === "multi" && <span className="ml-1.5 text-[11px] font-normal italic" style={{ color: C.mutedSoft }}>(bir nechta javobni tanlang)</span>}
+                    {q.answerType === "matching" && <span className="ml-1.5 text-[11px] font-normal italic" style={{ color: C.mutedSoft }}>({matchTypeLabel(q.matchType)})</span>}
                   </div>
                   {onToggleFlag && (
                     <button onClick={() => onToggleFlag(sectionKey, q.id)} title="Keyinroq qaytish uchun belgilash" className="shrink-0 p-1 -mt-1 -mr-1">
@@ -5419,6 +5558,18 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                         </label>
                       );
                     })
+                  ) : q.answerType === "matching" ? (
+                    <select
+                      value={answers[q.id] ?? ""}
+                      onChange={(e) => setAnswers((a) => ({ ...a, [q.id]: e.target.value === "" ? null : Number(e.target.value) }))}
+                      className="rounded-lg text-[13.5px] outline-none px-3 py-2.5 transition-colors"
+                      style={{ border: `1.5px solid ${answers[q.id] != null ? C.teal : C.border}`, backgroundColor: answers[q.id] != null ? C.tealSoft : C.paper, color: C.text, minWidth: 140 }}
+                    >
+                      <option value="">— Paragrafni tanlang —</option>
+                      {(q.options || []).map((label, idx) => (
+                        <option key={idx} value={idx}>{label}</option>
+                      ))}
+                    </select>
                   ) : (
                     q.options.map((o, idx) => (
                       <label key={idx} className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer text-[13.5px]" style={{ backgroundColor: answers[q.id] === idx ? C.tealSoft : C.paper, border: `1px solid ${answers[q.id] === idx ? C.teal : C.borderSoft}`, color: C.text }}>
@@ -5933,7 +6084,10 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                 {currentKey === "reading" && (
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 lg:gap-8 flex-1 min-h-0">
                     <div className="lg:h-full lg:overflow-y-auto lg:pr-2 pb-3">
-                      <HighlightablePassage text={exam.sections.reading.passage} />
+                      {(exam.sections.reading.paragraphs || []).length > 0 && (
+                        <ListOfParagraphs paragraphs={exam.sections.reading.paragraphs} />
+                      )}
+                      <HighlightablePassage text={readingPassageText(exam.sections.reading)} />
                     </div>
                     <div className="lg:h-full lg:overflow-y-auto lg:pl-6 lg:border-l pb-3" style={{ borderLeftColor: "var(--border-soft)" }}>
                       <MCQBlock sectionKey="reading" questions={exam.sections.reading.questions} answers={answers.reading} setAnswers={(fn) => setAnswers((a) => ({ ...a, reading: fn(a.reading) }))} flagged={flagged} onToggleFlag={toggleFlag} />
