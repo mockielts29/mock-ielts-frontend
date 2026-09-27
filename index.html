@@ -3445,10 +3445,9 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       /* "Rasmli" part turi uchun — butun part bitta umumiy rasmga (masalan xarita/
          diagramma) tegishli bo'ladi, pastidagi savollar esa shu rasmga qarab javoblanadi
          (IELTS Listening'dagi "label the map"/"label the plan" turidagi qismlar kabi). */
-const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
-/* Har bir listening part'i endi o'zining alohida audio faylini olishi mumkin. */
-const setPartAudio = (partId, url) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, audioUrl: url } : p)) } }));const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
-
+      const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
+      /* Har bir listening part'i endi o'zining alohida audio faylini olishi mumkin. */
+      const setPartAudio = (partId, url) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, audioUrl: url } : p)) } }));
       /* Savollarni sectionKey (va listening uchun partId) bo'yicha umumiy tarzda yangilash */
       const updateQuestions = (sectionKey, updater, partId) => {
         setSections((s) => {
