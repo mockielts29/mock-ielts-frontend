@@ -3460,6 +3460,9 @@
          javob turi tanlanadi — draftKey bo'yicha saqlanadi, shunda bir xil turdagi
          bir nechta savolni ketma-ket, qayta tanlamasdan qo'shish mumkin. */
       const [qType, setQType] = useState({}); // { [draftKey]: "mcq" | "multi" | "text" | "matching" }
+      /* Javob turi tanlangandan keyin, savol matni bilan BIRGA to'ldiriladigan
+         variantlar/to'g'ri javob qoralamasi — draftKey bo'yicha saqlanadi. */
+      const [qOptDraft, setQOptDraft] = useState({});
       const [saving, setSaving] = useState(false);
       const [activeSection, setActiveSection] = useState(null);
       /* Savol matni kiritish maydoni endi bitta qatorli <input> emas — avtomatik
