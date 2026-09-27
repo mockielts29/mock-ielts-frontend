@@ -3456,7 +3456,10 @@
         return { ...base, listening: { ...base.listening, parts: getListeningParts(base.listening) }, reading: { ...base.reading, paragraphs: base.reading.paragraphs || [] }, writing: normalizeWriting(base.writing) };
       });
       const [qDraft, setQDraft] = useState({ listening: "", reading: "", vocabulary: "" });
-      const [pendingQuestion, setPendingQuestion] = useState(null); // { sectionKey, partId, text }
+      /* Reading/Vocabulary bo'limlarida (part'ga bo'linmagan) savol qo'shishdan OLDIN
+         javob turi tanlanadi — draftKey bo'yicha saqlanadi, shunda bir xil turdagi
+         bir nechta savolni ketma-ket, qayta tanlamasdan qo'shish mumkin. */
+      const [qType, setQType] = useState({}); // { [draftKey]: "mcq" | "multi" | "text" | "matching" }
       const [saving, setSaving] = useState(false);
       const [activeSection, setActiveSection] = useState(null);
       /* Savol matni kiritish maydoni endi bitta qatorli <input> emas — avtomatik
@@ -3586,24 +3589,25 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         updateQuestions(sectionKey, (qs) => [...qs, newQ], partId);
       };
 
+      /* Javob turi endi HAR DOIM oldindan tanlangan bo'ladi (partMode — listening
+         part'lari uchun, yoki qType — reading/vocabulary uchun) — shuning uchun
+         bu funksiya faqat forcedType mavjud bo'lganda savolni qo'shadi. */
       const startAddQuestion = (sectionKey, partId, forcedType) => {
         const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
         const text = (qDraft[draftKey] || "").trim();
-        if (!text) return;
-        if (forcedType) {
-          addQuestionOfType(sectionKey, partId, text, forcedType);
-          setQDraft((d) => ({ ...d, [draftKey]: "" }));
-          return;
-        }
-        setPendingQuestion({ sectionKey, partId, text });
-      };
-      const confirmAddQuestion = (answerType, matchType) => {
-        if (!pendingQuestion) return;
-        const { sectionKey, partId, text } = pendingQuestion;
-        addQuestionOfType(sectionKey, partId, text, answerType, matchType);
-        const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
+        if (!text || !forcedType) return;
+        addQuestionOfType(sectionKey, partId, text, forcedType);
         setQDraft((d) => ({ ...d, [draftKey]: "" }));
-        setPendingQuestion(null);
+      };
+      /* Reading/Vocabulary uchun: avval javob turini tanlaydi (savol matni hali bo'sh) —
+         tanlangan tur draftKey bo'yicha eslab qolinadi, matn keyin pastdagi maydonga yoziladi. */
+      const chooseQType = (sectionKey, partId, answerType) => {
+        const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
+        setQType((t) => ({ ...t, [draftKey]: answerType }));
+      };
+      const resetQType = (sectionKey, partId) => {
+        const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
+        setQType((t) => ({ ...t, [draftKey]: null }));
       };
 
       const removeQuestion = (sectionKey, qid, partId) => updateQuestions(sectionKey, (qs) => qs.filter((q) => q.id !== qid), partId);
@@ -3667,7 +3671,11 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         const part = key === "listening" ? sections.listening.parts.find((p) => p.id === partId) : null;
         const questions = part ? part.questions : sections[key].questions;
         const draftKey = partId ? `${key}:${partId}` : key;
-        const isPending = !!pendingQuestion && pendingQuestion.sectionKey === key && pendingQuestion.partId === partId;
+        /* part yo'q bo'lgan bo'limlarda (Reading, Vocabulary) har bir yangi savol uchun
+           avval javob turi tanlanadi — tanlanmaguncha matn kiritish maydoni ko'rsatilmaydi. */
+        const selectedType = qType[draftKey];
+        const canPickMatching = key === "reading" && sections.reading.paragraphs.length > 0;
+        const typeLabel = (t) => (t === "mcq" ? "Variantli (MCQ)" : t === "multi" ? "Bir nechta javobli" : t === "text" ? "Matn javob" : t === "matching" ? "Moslashtirish" : "");
 
         /* Listening part'lari uchun: javob turi ("mcq" — abc / "multi" — bir nechta to'g'ri
            javobli / "text" — matnli) bir marta tanlanadi va o'sha part uchun saqlanib qoladi. */
@@ -3809,57 +3817,64 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                 )}
               </div>
             ))}
-            {isPending && (
+            {/* part yo'q bo'lgan bo'limlarda (Reading, Vocabulary) yangi savol qo'shish —
+                AVVAL javob turi tanlanadi, matn keyin yoziladi. Listening part'larida
+                tur allaqachon partMode orqali tanlangan bo'ladi (yuqorida), shu sabab
+                bu yerda faqat matn maydoni ko'rsatiladi. */}
+            {!part && !selectedType ? (
               <div className="rounded-lg p-3 space-y-2" style={{ backgroundColor: C.tealSoft, border: `1.5px solid ${C.teal}` }}>
-                <div className="text-[12.5px] font-medium" style={{ color: C.tealDeep, whiteSpace: "pre-wrap" }}>"<RichText text={pendingQuestion.text} />" — javob turini tanlang:</div>
+                <div className="text-[12.5px] font-medium" style={{ color: C.tealDeep }}>Yangi savol qo'shish — avval javob turini tanlang:</div>
                 <div className="flex items-center gap-2 flex-wrap">
-                  <Button size="sm" variant="subtle" icon="list-check" onClick={() => confirmAddQuestion("mcq")}>Variantli (MCQ)</Button>
-                  <Button size="sm" variant="subtle" icon="square-check" onClick={() => confirmAddQuestion("multi")}>Bir nechta javobli</Button>
-                  <Button size="sm" variant="subtle" icon="pen" onClick={() => confirmAddQuestion("text")}>Matn javob</Button>
+                  <Button size="sm" variant="subtle" icon="list-check" onClick={() => chooseQType(key, partId, "mcq")}>Variantli (MCQ)</Button>
+                  <Button size="sm" variant="subtle" icon="square-check" onClick={() => chooseQType(key, partId, "multi")}>Bir nechta javobli</Button>
+                  <Button size="sm" variant="subtle" icon="pen" onClick={() => chooseQType(key, partId, "text")}>Matn javob</Button>
                   {key === "reading" && (
-                    sections.reading.paragraphs.length > 0 ? (
-                      <>
-                        <Button size="sm" variant="subtle" icon="heading" onClick={() => confirmAddQuestion("matching", "heading")}>Matching Heading</Button>
-                        <Button size="sm" variant="subtle" icon="diagram-project" onClick={() => confirmAddQuestion("matching", "information")}>Matching Information</Button>
-                        <Button size="sm" variant="subtle" icon="list-ul" onClick={() => confirmAddQuestion("matching", "feature")}>Matching Feature</Button>
-                      </>
+                    canPickMatching ? (
+                      <Button size="sm" variant="subtle" icon="diagram-project" onClick={() => chooseQType(key, partId, "matching")}>Moslashtirish</Button>
                     ) : (
-                      <span className="text-[11.5px] italic" style={{ color: C.mutedSoft }}>Matching uchun avval "Paragraflar" bo'limini to'ldiring</span>
+                      <span className="text-[11.5px] italic" style={{ color: C.mutedSoft }}>Moslashtirish uchun avval "Paragraflar" bo'limini to'ldiring</span>
                     )
                   )}
-                  <button type="button" onClick={() => setPendingQuestion(null)} className="text-[12px] font-semibold hover:opacity-70 transition-opacity" style={{ color: C.mutedSoft }}>Bekor qilish</button>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-1.5">
+                {!part && (
+                  <div className="flex items-center gap-2 text-[11.5px]">
+                    <span style={{ color: C.mutedSoft }}>Javob turi:</span>
+                    <span className="font-semibold px-2 py-0.5 rounded-full" style={{ color: C.tealDeep, backgroundColor: C.tealSoft }}>{typeLabel(selectedType)}</span>
+                    <button type="button" onClick={() => resetQType(key, partId)} className="font-semibold hover:opacity-70 transition-opacity" style={{ color: C.mutedSoft }}>Turini o'zgartirish</button>
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => applyBoldToDraft(draftKey)}
+                    title="Belgilangan matnni qalinlashtirish (yoki kursor o'rniga qalin matn qo'shish)"
+                    className="w-7 h-7 rounded-md flex items-center justify-center font-bold text-[12.5px] shrink-0 transition-opacity hover:opacity-70"
+                    style={{ border: `1px solid ${C.border}`, backgroundColor: C.card, color: C.text }}
+                  >B</button>
+                  <span className="text-[11px]" style={{ color: C.mutedSoft }}>Matnni belgilab "B" ni bosing — qalinlashadi. Hohlagancha uzun yozishingiz mumkin.</span>
+                </div>
+                <div className="flex gap-2 items-end">
+                  <textarea
+                    ref={(el) => { draftRefs.current[draftKey] = el; if (el) autoGrowTextarea(el); }}
+                    value={qDraft[draftKey] || ""}
+                    onChange={(e) => { setQDraft((d) => ({ ...d, [draftKey]: e.target.value })); autoGrowTextarea(e.target); }}
+                    onSelect={(e) => trackDraftSelection(draftKey, e.target)}
+                    onMouseUp={(e) => trackDraftSelection(draftKey, e.target)}
+                    onKeyUp={(e) => trackDraftSelection(draftKey, e.target)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startAddQuestion(key, partId, part ? partMode : selectedType); } }}
+                    placeholder="Savol matnini kiriting... (Enter — qo'shish, Shift+Enter — yangi qator)"
+                    rows={1}
+                    className="flex-1 rounded-lg text-[13px] outline-none px-3 py-2 resize-none"
+                    style={{ border: `1.5px solid ${C.border}`, backgroundColor: C.paper, minHeight: 40, maxHeight: 260, overflowY: "auto", lineHeight: 1.4 }}
+                  />
+                  <Button size="sm" variant="subtle" icon="plus" onClick={() => startAddQuestion(key, partId, part ? partMode : selectedType)}>Qo'shish</Button>
                 </div>
               </div>
             )}
-            <div className="space-y-1.5">
-              <div className="flex items-center gap-2">
-                <button
-                  type="button"
-                  onMouseDown={(e) => e.preventDefault()}
-                  onClick={() => applyBoldToDraft(draftKey)}
-                  title="Belgilangan matnni qalinlashtirish (yoki kursor o'rniga qalin matn qo'shish)"
-                  className="w-7 h-7 rounded-md flex items-center justify-center font-bold text-[12.5px] shrink-0 transition-opacity hover:opacity-70"
-                  style={{ border: `1px solid ${C.border}`, backgroundColor: C.card, color: C.text }}
-                >B</button>
-                <span className="text-[11px]" style={{ color: C.mutedSoft }}>Matnni belgilab "B" ni bosing — qalinlashadi. Hohlagancha uzun yozishingiz mumkin.</span>
-              </div>
-              <div className="flex gap-2 items-end">
-                <textarea
-                  ref={(el) => { draftRefs.current[draftKey] = el; if (el) autoGrowTextarea(el); }}
-                  value={qDraft[draftKey] || ""}
-                  onChange={(e) => { setQDraft((d) => ({ ...d, [draftKey]: e.target.value })); autoGrowTextarea(e.target); }}
-                  onSelect={(e) => trackDraftSelection(draftKey, e.target)}
-                  onMouseUp={(e) => trackDraftSelection(draftKey, e.target)}
-                  onKeyUp={(e) => trackDraftSelection(draftKey, e.target)}
-                  onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); startAddQuestion(key, partId, part ? partMode : undefined); } }}
-                  placeholder="Savol matnini kiriting... (Enter — qo'shish, Shift+Enter — yangi qator)"
-                  rows={1}
-                  className="flex-1 rounded-lg text-[13px] outline-none px-3 py-2 resize-none"
-                  style={{ border: `1.5px solid ${C.border}`, backgroundColor: C.paper, minHeight: 40, maxHeight: 260, overflowY: "auto", lineHeight: 1.4 }}
-                />
-                <Button size="sm" variant="subtle" icon="plus" onClick={() => startAddQuestion(key, partId, part ? partMode : undefined)}>Qo'shish</Button>
-              </div>
-            </div>
           </div>
         );
       };
@@ -5272,12 +5287,11 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
        kiritilgan bo'lsa, har bir paragraf harfi bilan birga ko'rsatiladi (mavjud
        HighlightablePassage — belgilash offset mantig'iga tegmasdan, chunki bu shunchaki
        bitta uzun matn sifatida beriladi). Paragraf yo'q bo'lsa — eski xatti-harakat davom etadi. */
-    /* Matching savol turlari (Heading/Information/Feature) — faqat ko'rsatish/yo'riqnoma
-       uchun metama'lumot; barchasi bir xil A-H paragraf tanlash mexanizmi bilan ishlaydi. */
-    function matchTypeLabel(matchType) {
-      if (matchType === "heading") return "Matching Heading";
-      if (matchType === "feature") return "Matching Feature";
-      return "Matching Information";
+    /* Eski ma'lumotlarda matchType ("heading"/"information"/"feature") hali ham
+       saqlangan bo'lishi mumkin, ammo bular endi bitta savol turiga birlashtirilgan —
+       shuning uchun qaysi qiymat bo'lishidan qat'i nazar bitta o'zbekcha nom ko'rsatiladi. */
+    function matchTypeLabel() {
+      return "Moslashtirish";
     }
 
     function readingPassageText(readingSection) {
