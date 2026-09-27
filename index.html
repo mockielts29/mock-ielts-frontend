@@ -339,7 +339,7 @@
        o'tadi: JWT tokenlarni saqlaydi, har bir so'rovga Authorization
        header qo'shadi, 401 kelsa avtomatik refresh qiladi.
        ============================================================ */
-    const API_BASE_URL = "https://web-production-a2afc8.up.railway.app";
+    const API_BASE_URL = "https://web-production-e2edc.up.railway.app";
 
     const TOKEN_KEYS = { access: "ielts_access_token", refresh: "ielts_refresh_token" };
 
@@ -5885,7 +5885,7 @@
                 />
               )}
               <div className="flex items-center justify-between px-4 md:px-6 py-2.5" style={{ borderTop: currentKey !== "writing" ? `1px solid ${C.borderSoft}` : "none" }}>
-                <Button variant="ghost" disabled={idx === 0} onClick={() => setIdx((i) => i - 1)}>Oldingi</Button>
+                 <Button variant="ghost" disabled={idx === 0} onClick={() => setIdx((i) => i - 1)}>Oldingi</Button>
                 <Button onClick={goNext} icon="chevron-right">
                   {idx < sectionKeys.length - 1
                     ? (sectionKeys[idx + 1] === "writing" ? "Yozishga o'tish" : "Keyingi bo'lim")
