@@ -3209,20 +3209,24 @@
     function sectionLabel(key) {
       return { listening: "Listening", reading: "Reading", writing: "Writing", speaking: "Speaking" }[key];
     }
-    /* Speaking — IELTS formatidagi 3 ta qism (Part 1/2/3) doim FIKS holda mavjud
-       (Listening'dagi kabi dinamik qo'shilmaydi/o'chirilmaydi). Har bir part o'z
-       savollar to'plamiga (pool) va shundan nechtasi so'raladigan bo'lsa
-       (questionCount) shu sondagi savolga ega. Eski (speaking'siz) mock'lar bilan
-       orqaga moslik uchun fallback. */
+    /* Speaking — part'lar va savollar soni FIKS EMAS. Default holatda faqat bitta
+       "Part 1" ko'rinadi; admin xohlagancha part qo'shishi/o'chirishi va har bir
+       partga xohlagancha savol kiritishi mumkin. Eski mock'lar bilan orqaga moslik:
+       avval saqlangan part'lar (p1/p2/p3) o'zgarishsiz saqlanadi, eski
+       "questionCount" maydoni endi ishlatilmaydi va tozalanadi. */
     function normalizeSpeaking(speaking) {
-      const defaults = [
-        { id: "p1", title: "Part 1", questionCount: 3, questions: [] },
-        { id: "p2", title: "Part 2", questionCount: 1, questions: [] },
-        { id: "p3", title: "Part 3", questionCount: 3, questions: [] },
-      ];
-      if (!speaking || !speaking.parts) return { enabled: true, parts: defaults };
-      return { ...speaking, parts: defaults.map((d, i) => ({ ...d, ...(speaking.parts[i] || {}) })) };
+      if (!speaking || !Array.isArray(speaking.parts) || !speaking.parts.length) {
+        return { ...(speaking || {}), enabled: speaking ? speaking.enabled !== false : true, parts: [{ id: "p1", title: "Part 1", questions: [] }] };
+      }
+      return {
+        ...speaking,
+        parts: speaking.parts.map((p, i) => {
+          const { questionCount, ...rest } = p || {};
+          return { ...rest, id: rest.id || uid("spart"), title: rest.title || `Part ${i + 1}`, questions: Array.isArray(rest.questions) ? rest.questions : [] };
+        }),
+      };
     }
+
 
     /* Listening bo'limi Part1/Part2... tuzilmasida saqlanadi. Eski (parts'siz,
        flat questions) mock'lar bilan orqaga moslik uchun fallback. */
@@ -3546,17 +3550,32 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
       /* Har bir listening part'i endi o'zining alohida audio faylini olishi mumkin. */
       const setPartAudio = (partId, url) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, audioUrl: url } : p)) } }));
-      /* Speaking — Part1/2/3 FIKS bo'lgani uchun add/removePart kerak emas, faqat
-         har bir part ichidagi savollar pool'i va so'raladigan savollar soni
-         (questionCount) boshqariladi. */
+      /* Speaking — part va savollar dinamik: part qo'shish/o'chirish/nomini o'zgartirish,
+         savol qo'shish/tahrirlash/o'chirish/tartibini o'zgartirish. Sonlar cheklanmagan. */
+      const patchSpeakingParts = (fn) => setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: fn(s.speaking.parts) } }));
+      const addSpeakingPart = () => patchSpeakingParts((parts) => {
+        const maxN = parts.reduce((m, p) => { const r = /^Part\s+(\d+)$/i.exec((p.title || "").trim()); return r ? Math.max(m, Number(r[1])) : m; }, 0);
+        return [...parts, { id: uid("spart"), title: `Part ${Math.max(maxN, parts.length) + 1}`, questions: [] }];
+      });
+      const removeSpeakingPart = (partId) => patchSpeakingParts((parts) => (parts.length > 1 ? parts.filter((p) => p.id !== partId) : parts));
+      const renameSpeakingPart = (partId, title) => patchSpeakingParts((parts) => parts.map((p) => (p.id === partId ? { ...p, title } : p)));
       const addSpeakingQuestion = (partId, text) => {
         const t = (text || "").trim();
         if (!t) return;
-        setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: s.speaking.parts.map((p) => (p.id === partId ? { ...p, questions: [...p.questions, { id: uid("sq"), text: t }] } : p)) } }));
+        patchSpeakingParts((parts) => parts.map((p) => (p.id === partId ? { ...p, questions: [...p.questions, { id: uid("sq"), text: t }] } : p)));
         setSpeakingDraft((d) => ({ ...d, [partId]: "" }));
       };
-      const removeSpeakingQuestion = (partId, qid) => setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: s.speaking.parts.map((p) => (p.id === partId ? { ...p, questions: p.questions.filter((q) => q.id !== qid) } : p)) } }));
-      const setSpeakingQuestionCount = (partId, count) => setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: s.speaking.parts.map((p) => (p.id === partId ? { ...p, questionCount: Math.max(1, Number(count) || 1) } : p)) } }));
+      const editSpeakingQuestion = (partId, qid, text) => patchSpeakingParts((parts) => parts.map((p) => (p.id === partId ? { ...p, questions: p.questions.map((q) => (q.id === qid ? { ...q, text } : q)) } : p)));
+      const removeSpeakingQuestion = (partId, qid) => patchSpeakingParts((parts) => parts.map((p) => (p.id === partId ? { ...p, questions: p.questions.filter((q) => q.id !== qid) } : p)));
+      const moveSpeakingQuestion = (partId, idx, dir) => patchSpeakingParts((parts) => parts.map((p) => {
+        if (p.id !== partId) return p;
+        const j = idx + dir;
+        if (j < 0 || j >= p.questions.length) return p;
+        const qs = [...p.questions];
+        [qs[idx], qs[j]] = [qs[j], qs[idx]];
+        return { ...p, questions: qs };
+      }));
+
 
       /* Savollarni sectionKey (va listening uchun partId) bo'yicha umumiy tarzda yangilash */
       const updateQuestions = (sectionKey, updater, partId) => {
@@ -4022,10 +4041,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         if (key === "speaking") {
           const sp = normalizeSpeaking(s);
           const total = sp.parts.reduce((sum, p) => sum + p.questions.length, 0);
-          const short = sp.parts.filter((p) => p.questions.length < p.questionCount);
-          return total
-            ? `${total} ta savol, 3 part${short.length ? ` (${short.map((p) => p.title).join(", ")} — savol yetarli emas)` : ""}`
-            : "Savollar kiritilmagan";
+          return total ? `${total} ta savol, ${sp.parts.length} ta part` : "Savollar kiritilmagan";
         }
         return "";
       };
@@ -4132,46 +4148,62 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         }
         if (key === "speaking") {
           const sp = normalizeSpeaking(sections.speaking);
-          const partHint = { p1: "Tanishuv va umumiy savollar (odatda 3-4 ta qisqa savol)", p2: "Cue Card — bitta mavzu, o'quvchi ~2 daqiqa gapiradi", p3: "Chuqurroq muhokama (odatda 3-4 ta savol)" };
           return (
             <div className="space-y-4">
+              <div className="text-[12px]" style={{ color: C.mutedSoft }}>
+                Savollar soni cheklanmagan — har bir partga xohlagancha savol qo'shing. Kerak bo'lsa yangi part qo'shing.
+              </div>
               {sp.parts.map((part) => (
                 <div key={part.id} className="rounded-xl p-3 space-y-3" style={{ border: `1px solid ${C.borderSoft}` }}>
-                  <div className="flex items-center justify-between gap-2 flex-wrap">
-                    <div>
-                      <div className="font-semibold text-[13.5px]" style={{ color: C.ink }}>{part.title}</div>
-                      <div className="text-[11.5px]" style={{ color: C.mutedSoft }}>{partHint[part.id]}</div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[12px]" style={{ color: C.mutedSoft }}>So'raladigan savollar soni:</span>
-                      <input
-                        type="number"
-                        min={1}
-                        value={part.questionCount}
-                        onChange={(e) => setSpeakingQuestionCount(part.id, e.target.value)}
-                        className="w-16 rounded px-2 py-1 text-[12.5px] outline-none text-center"
-                        style={{ border: `1px solid ${C.border}`, backgroundColor: C.card }}
-                      />
-                    </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      value={part.title}
+                      onChange={(e) => renameSpeakingPart(part.id, e.target.value)}
+                      className="font-semibold text-[13.5px] rounded-lg px-2 py-1.5 outline-none flex-1"
+                      style={{ border: `1px solid ${C.border}`, backgroundColor: C.card, color: C.ink }}
+                    />
+                    <span className="text-[11.5px] shrink-0" style={{ color: C.mutedSoft }}>{part.questions.length} ta savol</span>
+                    {sp.parts.length > 1 && (
+                      <button
+                        type="button"
+                        title="Partni o'chirish"
+                        onClick={() => {
+                          if (part.questions.length && !window.confirm(`"${part.title}" va undagi ${part.questions.length} ta savol o'chiriladi. Davom etasizmi?`)) return;
+                          removeSpeakingPart(part.id);
+                        }}
+                      >
+                        <Icon name="trash" size={13} style={{ color: C.mutedSoft }} />
+                      </button>
+                    )}
                   </div>
                   <div className="space-y-1.5">
                     {part.questions.map((q, i) => (
-                      <div key={q.id} className="flex items-start justify-between gap-2 rounded-lg p-2.5" style={{ backgroundColor: C.paperDim }}>
-                        <div className="text-[13px] flex-1" style={{ color: C.text, whiteSpace: "pre-wrap" }}>{i + 1}. {q.text}</div>
-                        <button onClick={() => removeSpeakingQuestion(part.id, q.id)}><Icon name="trash" size={13} style={{ color: C.mutedSoft }} /></button>
+                      <div key={q.id} className="flex items-start gap-2 rounded-lg p-2.5" style={{ backgroundColor: C.paperDim }}>
+                        <div className="text-[13px] pt-1 shrink-0" style={{ color: C.mutedSoft }}>{i + 1}.</div>
+                        <textarea
+                          value={q.text}
+                          rows={Math.max(1, Math.min(6, String(q.text).split("\n").length))}
+                          onChange={(e) => editSpeakingQuestion(part.id, q.id, e.target.value)}
+                          className="text-[13px] flex-1 rounded px-1.5 py-1 outline-none resize-none bg-transparent"
+                          style={{ color: C.text, border: "1px solid transparent" }}
+                          onFocus={(e) => { e.target.style.border = `1px solid ${C.border}`; }}
+                          onBlur={(e) => { e.target.style.border = "1px solid transparent"; if (!e.target.value.trim()) removeSpeakingQuestion(part.id, q.id); }}
+                        />
+                        <div className="flex items-center gap-1.5 pt-1.5 shrink-0">
+                          <button type="button" disabled={i === 0} onClick={() => moveSpeakingQuestion(part.id, i, -1)} title="Yuqoriga"><Icon name="chevron-up" size={11} style={{ color: i === 0 ? C.borderSoft : C.mutedSoft }} /></button>
+                          <button type="button" disabled={i === part.questions.length - 1} onClick={() => moveSpeakingQuestion(part.id, i, 1)} title="Pastga"><Icon name="chevron-down" size={11} style={{ color: i === part.questions.length - 1 ? C.borderSoft : C.mutedSoft }} /></button>
+                          <button type="button" onClick={() => removeSpeakingQuestion(part.id, q.id)} title="Savolni o'chirish"><Icon name="trash" size={13} style={{ color: C.mutedSoft }} /></button>
+                        </div>
                       </div>
                     ))}
                     {!part.questions.length && <div className="text-[12px] italic" style={{ color: C.mutedSoft }}>Hali savol qo'shilmagan</div>}
-                    {part.questions.length < part.questionCount && (
-                      <div className="text-[11.5px]" style={{ color: C.danger }}>Kamida {part.questionCount} ta savol kiritilishi kerak (hozir {part.questions.length} ta)</div>
-                    )}
                   </div>
                   <div className="flex gap-2 items-end">
                     <textarea
                       value={speakingDraft[part.id] || ""}
                       onChange={(e) => setSpeakingDraft((d) => ({ ...d, [part.id]: e.target.value }))}
                       onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addSpeakingQuestion(part.id, speakingDraft[part.id]); } }}
-                      placeholder="Savol matnini kiriting... (Enter — qo'shish)"
+                      placeholder="Savol matnini kiriting... (Enter — qo'shish, Shift+Enter — yangi qator)"
                       rows={1}
                       className="flex-1 rounded-lg text-[13px] outline-none px-3 py-2 resize-none"
                       style={{ border: `1.5px solid ${C.border}`, backgroundColor: C.paper, minHeight: 40 }}
@@ -4180,6 +4212,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                   </div>
                 </div>
               ))}
+              <Button size="sm" variant="ghost" icon="plus" onClick={addSpeakingPart}>Part qo'shish</Button>
             </div>
           );
         }
