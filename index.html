@@ -823,6 +823,21 @@
        (Postgres) saqlanadi. "sections" (frontend) <-> "sections_data"
        (backend, xom JSON) — shakli o'zgarmaydi, faqat nomi.
        ============================================================ */
+    /* PAGINATION TUZATISHI: backend PAGE_SIZE=20 — avval faqat 1-sahifa
+       (20 ta yozuv) olinardi. Natijalar/examlar 20 tadan oshsa, eski natijalar
+       ro'yxatga kelmasdi va o'quvchi "topshirmagan" deb hisoblanib mockni
+       cheksiz ishlay olardi. Endi barcha sahifalar yuklanadi. */
+    async function apiFetchAll(path) {
+      const sep = path.includes("?") ? "&" : "?";
+      let all = [];
+      for (let page = 1; page <= 200; page++) {
+        const json = await apiFetch(`${path}${sep}page=${page}`);
+        if (Array.isArray(json)) return json;
+        all = all.concat(json.results || []);
+        if (!json.next) break;
+      }
+      return all;
+    }
     function examFromApi(e) {
       return {
         id: e.id,
@@ -839,8 +854,7 @@
     }
     const examApi = {
       list: async () => {
-        const json = await apiFetch("/api/exams/");
-        const results = Array.isArray(json) ? json : (json.results || []);
+        const results = await apiFetchAll("/api/exams/");
         return results.map(examFromApi);
       },
       create: async (e) => {
@@ -1012,8 +1026,7 @@
     }
     const resultApi = {
       list: async () => {
-        const json = await apiFetch("/api/results/");
-        const results = Array.isArray(json) ? json : (json.results || []);
+        const results = await apiFetchAll("/api/results/");
         return results.map(resultFromApi);
       },
       create: async (r) => {
@@ -6940,7 +6953,11 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       return (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {myExams.map((e) => {
-            const attempted = results.find((r) => r.studentId === student.id && r.examId === e.id && (!e.reopenedAt || r.submittedAt > e.reopenedAt));
+            /* Sanalar ISO matn ham, Date.now() raqami ham bo'lishi mumkin —
+               matn bilan raqamni `>` bilan solishtirish doim false berardi
+               (cheklov "yo'qolardi"). Ikkalasi ham millisekundga o'tkaziladi. */
+            const reopenedMs = e.reopenedAt ? new Date(e.reopenedAt).getTime() : 0;
+            const attempted = results.find((r) => r.studentId === student.id && r.examId === e.id && (!reopenedMs || new Date(r.submittedAt).getTime() > reopenedMs));
             const open = e.status === "on";
             return (
               <Card key={e.id}>
