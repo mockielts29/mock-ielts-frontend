@@ -1024,6 +1024,11 @@
         const json = await apiFetch(`/api/results/${id}/grade_writing/`, { method: "POST", body: JSON.stringify(payload) });
         return json.data;
       },
+      /* Speaking yozuvlari (audio bilan) — ro'yxat so'rovlarida yuborilmaydi, shu endpointdan olinadi. */
+      getSpeaking: async (id) => {
+        const json = await apiFetch(`/api/results/${id}/speaking/`);
+        return json.data || [];
+      },
     };
 
     /* Telegramning 4096 belgi chegarasiga mos, uzun matnni bo'laklarga bo'lib beradi. */
@@ -4358,8 +4363,10 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const [confirmDel, setConfirmDel] = useState(null);
       const [reopenChoice, setReopenChoice] = useState(null);
       const [reviewTarget, setReviewTarget] = useState(null);
+      const [speakingTarget, setSpeakingTarget] = useState(null);
 
       const pendingWriting = results.filter((r) => r.writingStatus === "pending_review");
+      const speakingResults = results.filter((r) => r.review?.speaking?.length).sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)).slice(0, 30);
 
       return (
         <div className="space-y-6">
@@ -4457,6 +4464,35 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
               {!pendingWriting.length && <EmptyState icon="pen" title="Baholash kutilayotgan ishlar yo'q" />}
             </div>
           </Card>
+
+          <Card>
+            <div className="flex items-center justify-between mb-3">
+              <div className="font-semibold text-[15px] f-display" style={{ color: C.ink }}>Speaking yozuvlari</div>
+              <Badge tone={speakingResults.length ? "teal" : "muted"}>{speakingResults.length} ta</Badge>
+            </div>
+            <div className="divide-y" style={{ borderColor: C.borderSoft }}>
+              {speakingResults.map((r) => {
+                const s = students.find((x) => x.id === r.studentId);
+                const recorded = r.review.speaking.filter((p) => p.recorded || p.audioUrl).length;
+                return (
+                  <div key={r.id} className="flex items-center justify-between py-2.5 gap-2">
+                    <div className="min-w-0">
+                      <div className="text-[13.5px] font-medium" style={{ color: C.text }}>{s?.name || r.studentName || "Noma'lum student"}</div>
+                      <div className="text-[11.5px]" style={{ color: C.mutedSoft }}>{r.examTitle} · {fmtDate(r.submittedAt)} · {recorded}/{r.review.speaking.length} part yozilgan</div>
+                    </div>
+                    <Button size="sm" variant="ghost" icon="headphones" onClick={() => setSpeakingTarget(r)}>Tinglash</Button>
+                  </div>
+                );
+              })}
+              {!speakingResults.length && <EmptyState icon="microphone" title="Speaking yozuvlari yo'q" />}
+            </div>
+          </Card>
+
+          {speakingTarget && (
+            <Modal title={`Speaking — ${students.find((x) => x.id === speakingTarget.studentId)?.name || speakingTarget.studentName || "o'quvchi"}`} onClose={() => setSpeakingTarget(null)} width="760px">
+              <SpeakingRecordings resultId={speakingTarget.id} parts={speakingTarget.review.speaking} />
+            </Modal>
+          )}
 
           {showNew && (
             <Modal title="Yangi mock exam yaratish" onClose={() => setShowNew(false)} width="760px">
@@ -5661,6 +5697,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const range = count > 1 ? `1 - ${count}` : "1";
       if (key === "listening") return `Audioni tinglang va ${range}-savollarga javob bering.`;
       if (key === "reading") return `Matnni o'qing va ${range}-savollarga javob bering.`;
+      if (key === "speaking") return "Savollarni o'qing va mikrofon tugmasi orqali javobingizni yozib oling. Har bir part alohida sahifada.";
       return "";
     }
 
@@ -5823,7 +5860,290 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
     /* Review screen shown after the last section — mirrors the real CD IELTS
        "Review" page: a question palette per section (answered / unanswered /
        flagged) that the candidate can jump back into before final submit. */
-    function ExamReview({ exam, sectionKeys, answers, writingText, flagged, onJump, onSubmit, submitting }) {
+    /* ============================================================
+       SPEAKING — o'quvchi tomoni: har bir part alohida sahifa, har bir partga
+       alohida mikrofon yozuvi. Yozuv base64 data-URL sifatida saqlanadi
+       (loyihadagi boshqa fayllar bilan bir xil konventsiya).
+       ============================================================ */
+    const SPEAKING_MIME_CANDIDATES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus"];
+    const SPEAKING_MAX_SECONDS = 600; // bitta part yozuvi uchun maksimal davomiylik (10 daqiqa)
+    function pickRecorderMime() {
+      if (typeof MediaRecorder === "undefined") return "";
+      return SPEAKING_MIME_CANDIDATES.find((m) => { try { return MediaRecorder.isTypeSupported(m); } catch (e) { return false; } }) || "";
+    }
+    function blobToDataUrl(blob) {
+      return new Promise((resolve, reject) => {
+        const r = new FileReader();
+        r.onload = () => resolve(r.result);
+        r.onerror = () => reject(r.error);
+        r.readAsDataURL(blob);
+      });
+    }
+    /* Faqat savoli bor part'lar o'quvchiga ko'rsatiladi. */
+    function speakingPlayableParts(speaking) {
+      return normalizeSpeaking(speaking).parts.filter((p) => p.questions.length > 0);
+    }
+
+    function SpeakingRecorder({ recording, onRecorded, onClear, onBusyChange }) {
+      const [status, setStatus] = useState("idle"); // idle | starting | recording | saving
+      const [elapsed, setElapsed] = useState(0);
+      const [level, setLevel] = useState(0);
+      const [error, setError] = useState("");
+      const recRef = useRef(null);
+      const streamRef = useRef(null);
+      const chunksRef = useRef([]);
+      const startedAtRef = useRef(0);
+      const timerRef = useRef(null);
+      const audioCtxRef = useRef(null);
+      const rafRef = useRef(null);
+      const onRecordedRef = useRef(onRecorded);
+      onRecordedRef.current = onRecorded;
+      const onBusyRef = useRef(onBusyChange);
+      onBusyRef.current = onBusyChange;
+
+      useEffect(() => { if (onBusyRef.current) onBusyRef.current(status !== "idle"); }, [status]);
+
+      const releaseResources = () => {
+        if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+        if (rafRef.current) { cancelAnimationFrame(rafRef.current); rafRef.current = null; }
+        if (audioCtxRef.current) { try { audioCtxRef.current.close(); } catch (e) { /* e'tiborsiz */ } audioCtxRef.current = null; }
+        if (streamRef.current) { streamRef.current.getTracks().forEach((t) => t.stop()); streamRef.current = null; }
+        setLevel(0);
+      };
+
+      /* Komponent yo'q qilinsa (part almashsa, bo'lim vaqti tugasa yoki chiqilsa) — yozuv
+         to'xtatiladi; onstop orqali shu paytgacha yozilgani baribir saqlanadi. */
+      useEffect(() => () => {
+        const rec = recRef.current;
+        if (rec && rec.state !== "inactive") { try { rec.stop(); } catch (e) { releaseResources(); } }
+        else releaseResources();
+      }, []); // eslint-disable-line
+
+      const startLevelMeter = (stream) => {
+        try {
+          const Ctx = window.AudioContext || window.webkitAudioContext;
+          if (!Ctx) return;
+          const ctx = new Ctx();
+          audioCtxRef.current = ctx;
+          const analyser = ctx.createAnalyser();
+          analyser.fftSize = 512;
+          ctx.createMediaStreamSource(stream).connect(analyser);
+          const buf = new Uint8Array(analyser.fftSize);
+          let last = 0;
+          const loop = (t) => {
+            analyser.getByteTimeDomainData(buf);
+            let sum = 0;
+            for (let i = 0; i < buf.length; i++) { const v = (buf[i] - 128) / 128; sum += v * v; }
+            if (t - last > 80) { last = t; setLevel(Math.min(1, Math.sqrt(sum / buf.length) * 4)); }
+            rafRef.current = requestAnimationFrame(loop);
+          };
+          rafRef.current = requestAnimationFrame(loop);
+        } catch (e) { /* daraja ko'rsatkichi ixtiyoriy */ }
+      };
+
+      const stop = () => {
+        const rec = recRef.current;
+        if (rec && rec.state !== "inactive") { setStatus("saving"); rec.stop(); }
+      };
+
+      const start = async (replace = false) => {
+        setError("");
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === "undefined") {
+          setError("Brauzeringiz audio yozishni qo'llab-quvvatlamaydi. Chrome, Edge, Firefox yoki yangi Safari'dan (HTTPS orqali) foydalaning.");
+          return;
+        }
+        setStatus("starting");
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } });
+        } catch (e) {
+          setStatus("idle");
+          setError(e && (e.name === "NotAllowedError" || e.name === "SecurityError")
+            ? "Mikrofonga ruxsat berilmadi. Brauzer manzil qatoridagi qulf belgisi orqali ruxsat bering va qayta urinib ko'ring."
+            : e && e.name === "NotFoundError" ? "Mikrofon topilmadi. Mikrofonni ulab, qayta urinib ko'ring."
+            : "Mikrofonni ishga tushirib bo'lmadi. Boshqa dastur mikrofondan foydalanmayotganini tekshiring.");
+          return;
+        }
+        streamRef.current = stream;
+        const mime = pickRecorderMime();
+        let rec;
+        try {
+          rec = new MediaRecorder(stream, { ...(mime ? { mimeType: mime } : {}), audioBitsPerSecond: 32000 });
+        } catch (e) {
+          try { rec = new MediaRecorder(stream); } catch (e2) {
+            releaseResources(); setStatus("idle");
+            setError("Audio yozishni boshlab bo'lmadi.");
+            return;
+          }
+        }
+        chunksRef.current = [];
+        rec.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunksRef.current.push(ev.data); };
+        rec.onerror = () => { setError("Yozish paytida xatolik yuz berdi."); };
+        rec.onstop = async () => {
+          const durationSec = Math.max(1, Math.round((Date.now() - startedAtRef.current) / 1000));
+          const type = ((rec.mimeType || mime || "audio/webm").split(";")[0]) || "audio/webm";
+          releaseResources();
+          recRef.current = null;
+          const chunks = chunksRef.current;
+          chunksRef.current = [];
+          if (!chunks.length) { setStatus("idle"); setError("Hech qanday ovoz yozilmadi. Mikrofonni tekshirib, qayta urinib ko'ring."); return; }
+          try {
+            const url = await blobToDataUrl(new Blob(chunks, { type }));
+            if (onRecordedRef.current) onRecordedRef.current({ url, mime: type, durationSec, recordedAt: Date.now() });
+          } catch (e) {
+            setError("Yozuvni saqlab bo'lmadi. Qayta yozib ko'ring.");
+          }
+          setStatus("idle");
+        };
+        recRef.current = rec;
+        startedAtRef.current = Date.now();
+        setElapsed(0);
+        rec.start(1000);
+        setStatus("recording");
+        if (replace) onClear(); // eski yozuv faqat mikrofon haqiqatan ishga tushgach o'chiriladi
+        startLevelMeter(stream);
+        timerRef.current = setInterval(() => {
+          const sec = Math.floor((Date.now() - startedAtRef.current) / 1000);
+          setElapsed(sec);
+          if (sec >= SPEAKING_MAX_SECONDS) stop();
+        }, 250);
+      };
+
+      const busy = status !== "idle";
+      return (
+        <div className="rounded-2xl p-5 space-y-4" style={{ border: `1.5px solid ${status === "recording" ? C.danger : C.borderSoft}`, backgroundColor: C.paperDim }}>
+          <style>{`@keyframes spkPulse { 0%,100% { opacity: 1; transform: scale(1); } 50% { opacity: .35; transform: scale(1.35); } }`}</style>
+
+          {status === "recording" && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-3">
+                <div className="flex items-center gap-2 font-semibold text-[14px]" style={{ color: C.danger }}>
+                  <span className="inline-block w-3 h-3 rounded-full" style={{ backgroundColor: C.danger, animation: "spkPulse 1.1s ease-in-out infinite" }} />
+                  Yozilmoqda
+                </div>
+                <div className="f-mono text-[18px] font-bold" style={{ color: C.ink }}>{fmtClock(elapsed)}</div>
+              </div>
+              <div className="h-2 rounded-full overflow-hidden" style={{ backgroundColor: C.borderSoft }}>
+                <div className="h-full rounded-full" style={{ width: `${Math.round(level * 100)}%`, backgroundColor: C.teal, transition: "width .08s linear" }} />
+              </div>
+              <div className="flex justify-center">
+                <Button variant="danger" size="lg" icon="stop" onClick={stop}>Yozishni to'xtatish</Button>
+              </div>
+            </div>
+          )}
+
+          {(status === "starting" || status === "saving") && (
+            <div className="flex items-center justify-center gap-2 text-[13.5px] py-3" style={{ color: C.muted }}>
+              <Icon name="spinner" size={15} className="fa-spin" />
+              {status === "starting" ? "Mikrofon ishga tushirilmoqda..." : "Yozuv saqlanmoqda..."}
+            </div>
+          )}
+
+          {!busy && recording && recording.url && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="flex items-center gap-2 font-semibold text-[13.5px]" style={{ color: C.success }}>
+                  <Icon name="circle-check" size={15} /> Yozuv saqlandi
+                </div>
+                <Badge tone="teal"><Icon name="clock" size={11} /> {fmtClock(recording.durationSec || 0)}</Badge>
+              </div>
+              <audio controls src={recording.url} className="w-full" style={{ height: 40 }} />
+              <div className="flex justify-end">
+                <Button size="sm" variant="ghost" icon="rotate-right" onClick={() => { if (window.confirm("Oldingi yozuv o'chiriladi va qaytadan yozasiz. Davom etasizmi?")) start(true); }}>Qayta yozish</Button>
+              </div>
+            </div>
+          )}
+
+          {!busy && !(recording && recording.url) && (
+            <div className="flex flex-col items-center gap-3 py-2 text-center">
+              <button
+                type="button"
+                onClick={() => start(false)}
+                className="w-20 h-20 rounded-full flex items-center justify-center transition-transform active:scale-95 hover:scale-105"
+                style={{ backgroundColor: C.teal, boxShadow: "0 6px 18px rgba(0,0,0,0.15)" }}
+                title="Yozishni boshlash"
+              >
+                <Icon name="microphone" size={28} style={{ color: "#fff" }} />
+              </button>
+              <div className="font-semibold text-[14px]" style={{ color: C.ink }}>Yozishni boshlash</div>
+              <div className="text-[12.5px] max-w-md" style={{ color: C.muted }}>
+                Tugmani bosing va yuqoridagi barcha savollarga bitta yozuvda javob bering. Tugagach «To'xtatish»ni bosing.
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-start gap-2 text-[12.5px] rounded-lg p-3" style={{ backgroundColor: C.dangerSoft, color: C.danger }}>
+              <Icon name="triangle-exclamation" size={13} className="mt-0.5" /> <span>{error}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    /* Bitta speaking part'ining alohida sahifasi: savollar + shu part uchun yozuv. */
+    function SpeakingPartPage({ part, index, total, recording, onRecorded, onClear, onBusyChange }) {
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="font-bold text-[13.5px] uppercase tracking-wide" style={{ color: C.ink }}>{part.title}</div>
+            <Badge tone="muted">{index + 1} / {total} part</Badge>
+          </div>
+          <div className="space-y-2">
+            {part.questions.map((q, i) => (
+              <div key={q.id} className="flex items-start gap-3 rounded-xl p-3.5" style={{ backgroundColor: C.card, border: `1px solid ${C.borderSoft}` }}>
+                <div className="w-7 h-7 rounded-lg flex items-center justify-center text-[12.5px] font-bold shrink-0" style={{ backgroundColor: C.tealSoft, color: C.tealDeep }}>{i + 1}</div>
+                <div className="text-[14.5px] whitespace-pre-wrap leading-relaxed pt-0.5" style={{ color: C.text }}><RichText text={q.text} /></div>
+              </div>
+            ))}
+          </div>
+          <SpeakingRecorder key={part.id} recording={recording} onRecorded={onRecorded} onClear={onClear} onBusyChange={onBusyChange} />
+        </div>
+      );
+    }
+
+    /* Natijalar sahifasida (o'quvchi va admin uchun) speaking yozuvlarini tinglash.
+       Ro'yxat so'rovlari yengil bo'lishi uchun audio backend'da alohida endpointdan
+       (/api/results/<id>/speaking/) yuklanadi. */
+    function SpeakingRecordings({ resultId, parts }) {
+      const [items, setItems] = useState(() => (parts || []).every((p) => !p.recorded || p.audioUrl) ? parts : null);
+      const [error, setError] = useState("");
+      useEffect(() => {
+        if (items) return;
+        let cancelled = false;
+        resultApi.getSpeaking(resultId).then((d) => { if (!cancelled) setItems(d); }).catch((e) => { if (!cancelled) setError(e.message || "Yozuvlar yuklanmadi"); });
+        return () => { cancelled = true; };
+      }, [resultId]); // eslint-disable-line
+      if (error) return <div className="text-[13px] rounded-lg p-3" style={{ backgroundColor: C.dangerSoft, color: C.danger }}>{error}</div>;
+      if (!items) return <div className="flex items-center gap-2 text-[13px]" style={{ color: C.muted }}><Icon name="spinner" size={14} className="fa-spin" /> Yozuvlar yuklanmoqda...</div>;
+      return (
+        <div className="space-y-4">
+          {items.map((part) => (
+            <div key={part.id} className="rounded-xl p-3.5 space-y-3" style={{ border: `1px solid ${C.borderSoft}` }}>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="font-semibold text-[14px]" style={{ color: C.ink }}>{part.title}</div>
+                {part.recorded || part.audioUrl
+                  ? <Badge tone="teal"><Icon name="clock" size={11} /> {fmtClock(part.durationSec || 0)}</Badge>
+                  : <Badge tone="danger">Yozuv yo'q</Badge>}
+              </div>
+              <ol className="space-y-1 text-[13px] list-decimal pl-5" style={{ color: C.text }}>
+                {(part.questions || []).map((q) => <li key={q.id} className="whitespace-pre-wrap"><RichText text={q.text} /></li>)}
+              </ol>
+              {part.audioUrl && (
+                <div className="flex items-center gap-2">
+                  <audio controls src={part.audioUrl} className="w-full" style={{ height: 40 }} />
+                  <a href={part.audioUrl} download={`${(part.title || "speaking").replace(/\s+/g, "-").toLowerCase()}.${(part.mime || "audio/webm").split("/")[1] || "webm"}`} title="Yuklab olish" className="shrink-0 p-1.5 rounded-lg" style={{ color: C.teal }}>
+                    <Icon name="download" size={15} />
+                  </a>
+                </div>
+              )}
+            </div>
+          ))}
+        </div>
+      );
+    }
+
+    function ExamReview({ exam, sectionKeys, answers, writingText, flagged, speakingAudio, onJump, onSubmit, submitting }) {
       return (
         <div className="space-y-4">
           <div className="flex items-center gap-2 mb-1">
@@ -5847,6 +6167,27 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                   <div className="flex flex-wrap gap-2">
                     <Badge tone={wc1 >= writing.task1.minWords ? "success" : "danger"}>Task 1: {wc1} / {writing.task1.minWords} so'z</Badge>
                     <Badge tone={wc2 >= writing.task2.minWords ? "success" : "danger"}>Task 2: {wc2} / {writing.task2.minWords} so'z</Badge>
+                  </div>
+                  <button onClick={() => onJump(key)} className="text-[12.5px] font-semibold mt-2" style={{ color: C.teal }}>O'zgartirish</button>
+                </Card>
+              );
+            }
+            if (key === "speaking") {
+              const parts = speakingPlayableParts(exam.sections.speaking);
+              return (
+                <Card key={key}>
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2 font-semibold text-[14px]" style={{ color: C.ink }}>
+                      <Icon name={sectionIcon(key)} size={15} style={{ color: C.teal }} /> {sectionLabel(key)}
+                    </div>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {parts.map((part) => {
+                      const rec = speakingAudio && speakingAudio[part.id];
+                      return rec && rec.url
+                        ? <Badge key={part.id} tone="success">{part.title}: yozilgan ({fmtClock(rec.durationSec || 0)})</Badge>
+                        : <Badge key={part.id} tone="danger">{part.title}: yozilmagan</Badge>;
+                    })}
                   </div>
                   <button onClick={() => onJump(key)} className="text-[12.5px] font-semibold mt-2" style={{ color: C.teal }}>O'zgartirish</button>
                 </Card>
@@ -5908,7 +6249,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
     }
 
     function ExamRunner({ exam, student, onExit, onSubmit, toast }) {
-      const sectionKeys = useMemo(() => Object.entries(exam.sections).filter(([, v]) => v.enabled).map(([k]) => k), [exam]);
+      const sectionKeys = useMemo(() => Object.entries(exam.sections).filter(([k, v]) => v.enabled && (k !== "speaking" || speakingPlayableParts(v).length > 0)).map(([k]) => k), [exam]);
 
       /* Avvalgi (tugallanmagan) urinish bormi — endi backend'dagi ExamAttempt
          orqali tekshiriladi (examApi.start: mavjud bo'lsa qaytaradi, bo'lmasa
@@ -5923,6 +6264,10 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const [writingText, setWritingText] = useState({ task1: "", task2: "" });
       const [writingTask, setWritingTask] = useState(1); // 1 yoki 2 — Writing bo'limi ichidagi ikki task orasidagi tab
       const [listeningPartIdx, setListeningPartIdx] = useState(0); // Listening bo'limi ichidagi part'lar orasidagi tab
+      const [speakingPartIdx, setSpeakingPartIdx] = useState(0); // Speaking — hozirgi part sahifasi
+      const [speakingAudio, setSpeakingAudio] = useState({}); // { [partId]: { url, mime, durationSec, recordedAt } }
+      const [speakingBusy, setSpeakingBusy] = useState(false); // mikrofon yozilayotgan paytda navigatsiya bloklanadi
+      const [skipPrompt, setSkipPrompt] = useState(null); // yozuvsiz part'dan o'tishni tasdiqlash
       const [flagged, setFlagged] = useState({});
       const [submitting, setSubmitting] = useState(false);
       const [notepadOpen, setNotepadOpen] = useState(false);
@@ -5943,6 +6288,8 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
             setWritingText(a.writing_text && (a.writing_text.task1 !== undefined) ? a.writing_text : { task1: "", task2: "" });
             setWritingTask((a.progress_data && a.progress_data.writingTask) || 1);
             setListeningPartIdx((a.progress_data && a.progress_data.listeningPartIdx) || 0);
+            setSpeakingPartIdx((a.progress_data && a.progress_data.speakingPartIdx) || 0);
+            setSpeakingAudio((a.progress_data && a.progress_data.speaking) || {});
             setFlagged(a.flagged || {});
             setNotepadText(a.notepad_text || "");
             setFontLevel(a.font_level != null ? a.font_level : 1);
@@ -6033,7 +6380,9 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         });
       };
 
-      const buildProgressPayload = () => ({
+      /* includeAudio=false — topshirishda: yozuvlar natijaning o'zida (review.speaking)
+         saqlanadi, urinish (attempt) ichida ikkinchi nusxa kerak emas. */
+      const buildProgressPayload = (includeAudio = true) => ({
         current_section_index: idx,
         answers,
         writing_text: writingText,
@@ -6041,7 +6390,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         notepad_text: notepadText,
         font_level: fontLevel,
         section_deadlines: sectionDeadlines,
-        progress_data: { writingTask, listeningPartIdx },
+        progress_data: { writingTask, listeningPartIdx, speakingPartIdx, speaking: includeAudio ? speakingAudio : {} },
       });
 
       const submit = async () => {
@@ -6067,6 +6416,17 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         const wrongCount = allReview.length - correctCount - unansweredCount;
         const accuracy = allReview.length ? Math.round((correctCount / allReview.length) * 100) : null;
 
+        const reviewSpeaking = sectionKeys.includes("speaking")
+          ? speakingPlayableParts(exam.sections.speaking).map((part) => {
+              const rec = speakingAudio[part.id];
+              return {
+                id: part.id, title: part.title,
+                questions: part.questions.map((q) => ({ id: q.id, text: q.text })),
+                recorded: !!(rec && rec.url), audioUrl: (rec && rec.url) || "", mime: (rec && rec.mime) || "", durationSec: (rec && rec.durationSec) || 0,
+              };
+            })
+          : null;
+
         const result = {
           id: uid("res"), studentId: student.id, examId: exam.id, attemptId: attemptIdRef.current, submittedAt: Date.now(),
           examType: exam.examType || "academic",
@@ -6074,7 +6434,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           sectionScores: { listening: listeningPct, reading: readingPct, vocabulary: vocabPct },
           sectionBands: { listening: listeningBand, reading: readingBand, vocabulary: vocabBand },
           sectionRaw: { listening: rawSection("listening"), reading: rawSection("reading"), vocabulary: rawSection("vocabulary") },
-          review: { listening: reviewListening, reading: reviewReading, vocabulary: reviewVocab },
+          review: { listening: reviewListening, reading: reviewReading, vocabulary: reviewVocab, ...(reviewSpeaking ? { speaking: reviewSpeaking } : {}) },
           stats: { correctCount, wrongCount, unansweredCount, totalQuestions: allReview.length, accuracy },
           writingText: hasWriting ? writingText : { task1: "", task2: "" },
           writingStatus: hasWriting ? "pending_review" : "n/a",
@@ -6083,7 +6443,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         try {
           /* Attempt'ni backend'da "submitted" deb belgilaymiz — shu bilan
              keyingi safar shu examga kirilsa yangi urinish boshlanadi. */
-          await examApi.submit(exam.id, buildProgressPayload());
+          await examApi.submit(exam.id, buildProgressPayload(false));
           /* Urinish backendda endi "submitted" — shundan keyingi har qanday
              save_progress chaqiruvi baribir 404 qaytaradi (kutilgan holat).
              Bayroqni shu yerda qo'yamiz, shunda komponent chiqishda (unmount)
@@ -6167,7 +6527,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           examApi.saveProgress(exam.id, latestStateRef.current).catch(() => { });
         }, 1200);
         return () => clearTimeout(saveTimerRef.current);
-      }, [loaded, idx, answers, writingText, writingTask, listeningPartIdx, flagged, notepadText, fontLevel, sectionDeadlines]); // eslint-disable-line
+      }, [loaded, idx, answers, writingText, writingTask, listeningPartIdx, speakingPartIdx, speakingAudio, flagged, notepadText, fontLevel, sectionDeadlines]); // eslint-disable-line
 
       /* Komponent yo'q qilinganda (chiqishda) so'nggi holatni darhol (debounce'siz)
          yuboramiz — aks holda oxirgi 1.2 soniyadagi o'zgarish yo'qolib qolishi mumkin. */
@@ -6191,6 +6551,19 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const listeningParts = getListeningParts(exam.sections.listening);
       const currentListeningPart = listeningParts[Math.min(listeningPartIdx, listeningParts.length - 1)] || listeningParts[0];
       const listeningNumberOffset = listeningParts.slice(0, listeningParts.indexOf(currentListeningPart)).reduce((sum, p) => sum + listeningPartQuestions(p).length, 0);
+      const speakingParts = speakingPlayableParts(exam.sections.speaking);
+      const currentSpeakingPart = speakingParts[Math.min(speakingPartIdx, Math.max(0, speakingParts.length - 1))];
+      const isSpeaking = !isReview && currentKey === "speaking" && !!currentSpeakingPart;
+      const speakingIdxSafe = currentSpeakingPart ? speakingParts.indexOf(currentSpeakingPart) : 0;
+      const goPrev = () => { if (isSpeaking && speakingIdxSafe > 0) setSpeakingPartIdx(speakingIdxSafe - 1); else setIdx((i) => i - 1); };
+      const goNextGuarded = () => {
+        if (isSpeaking && !(speakingAudio[currentSpeakingPart.id] && speakingAudio[currentSpeakingPart.id].url)) {
+          setSkipPrompt(() => () => { if (speakingIdxSafe < speakingParts.length - 1) setSpeakingPartIdx(speakingIdxSafe + 1); else goNext(); });
+          return;
+        }
+        if (isSpeaking && speakingIdxSafe < speakingParts.length - 1) { setSpeakingPartIdx(speakingIdxSafe + 1); return; }
+        goNext();
+      };
       const countWords = (t) => (t || "").trim().split(/\s+/).filter(Boolean).length;
       const wordCount1 = countWords(writingText.task1);
       const wordCount2 = countWords(writingText.task2);
@@ -6254,7 +6627,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
             )}
             {!isReview && (
               <div className="rounded-xl p-3 mb-3 shrink-0" style={{ backgroundColor: C.card, border: `1px solid ${C.borderSoft}` }}>
-                <div className="font-semibold text-[14px] mb-1" style={{ color: C.ink }}>{currentKey === "listening" ? currentListeningPart.title : "Part 1"}</div>
+                <div className="font-semibold text-[14px] mb-1" style={{ color: C.ink }}>{currentKey === "listening" ? currentListeningPart.title : currentKey === "speaking" && currentSpeakingPart ? currentSpeakingPart.title : "Part 1"}</div>
                 <div className="text-[13px]" style={{ color: C.muted }}>
                   {sectionInstructionText(currentKey, currentKey === "writing" ? (writingTask === 1 ? writing.task1.minWords : writing.task2.minWords) : currentKey === "listening" ? listeningPartQuestions(currentListeningPart).length : flattenSectionQuestions(exam, currentKey).length)}
                 </div>
@@ -6268,6 +6641,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                 answers={answers}
                 writingText={writingText}
                 flagged={flagged}
+                speakingAudio={speakingAudio}
                 onJump={(key) => setIdx(sectionKeys.indexOf(key))}
                 onSubmit={submit}
                 submitting={submitting}
@@ -6377,6 +6751,43 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                     </div>
                   </div>
                 )}
+                {currentKey === "speaking" && currentSpeakingPart && (
+                  <div className="space-y-4">
+                    {speakingParts.length > 1 && (
+                      <div className="flex items-center gap-2 flex-wrap">
+                        {speakingParts.map((part, pi) => {
+                          const done = !!(speakingAudio[part.id] && speakingAudio[part.id].url);
+                          const active = pi === speakingIdxSafe;
+                          return (
+                            <button
+                              key={part.id}
+                              disabled={speakingBusy}
+                              onClick={() => setSpeakingPartIdx(pi)}
+                              className="px-4 py-2 rounded-lg text-[13px] font-semibold transition-colors disabled:opacity-60"
+                              style={{
+                                border: `1.5px solid ${active ? C.teal : C.border}`,
+                                backgroundColor: active ? C.tealSoft : C.card,
+                                color: active ? C.tealDeep : C.muted,
+                              }}
+                            >
+                              {part.title} {done && <Icon name="circle-check" size={11} className="ml-1" style={{ color: C.success }} />}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <SpeakingPartPage
+                      key={currentSpeakingPart.id}
+                      part={currentSpeakingPart}
+                      index={speakingIdxSafe}
+                      total={speakingParts.length}
+                      recording={speakingAudio[currentSpeakingPart.id]}
+                      onRecorded={(rec) => setSpeakingAudio((m) => ({ ...m, [currentSpeakingPart.id]: rec }))}
+                      onClear={() => setSpeakingAudio((m) => { const { [currentSpeakingPart.id]: _removed, ...rest } = m; return rest; })}
+                      onBusyChange={setSpeakingBusy}
+                    />
+                  </div>
+                )}
                 {currentKey === "vocabulary" && (
                   <MCQBlock sectionKey="vocabulary" questions={exam.sections.vocabulary.questions} answers={answers.vocabulary} setAnswers={(fn) => setAnswers((a) => ({ ...a, vocabulary: fn(a.vocabulary) }))} flagged={flagged} onToggleFlag={toggleFlag} />
                 )}
@@ -6388,7 +6799,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
               above always sizes itself around it and nothing can ever overlap it. */}
           {!isReview && (
             <div className="shrink-0" style={{ backgroundColor: C.card, borderTop: `1px solid ${C.border}`, boxShadow: "0 -2px 10px rgba(0,0,0,0.06)" }}>
-              {currentKey !== "writing" && (
+              {currentKey !== "writing" && currentKey !== "speaking" && (
                 <QuestionNavigator
                   sectionKey={currentKey}
                   questions={flattenSectionQuestions(exam, currentKey)}
@@ -6411,10 +6822,13 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                   }}
                 />
               )}
-              <div className="flex items-center justify-between px-4 md:px-6 py-2.5" style={{ borderTop: currentKey !== "writing" ? `1px solid ${C.borderSoft}` : "none" }}>
-                 <Button variant="ghost" disabled={idx === 0} onClick={() => setIdx((i) => i - 1)}>Oldingi</Button>
-                <Button onClick={goNext} icon="chevron-right">
-                  {idx < sectionKeys.length - 1
+              <div className="flex items-center justify-between px-4 md:px-6 py-2.5" style={{ borderTop: currentKey !== "writing" && currentKey !== "speaking" ? `1px solid ${C.borderSoft}` : "none" }}>
+                 <Button variant="ghost" disabled={(idx === 0 && !(isSpeaking && speakingIdxSafe > 0)) || (isSpeaking && speakingBusy)} onClick={goPrev}>{isSpeaking && speakingIdxSafe > 0 ? "Oldingi part" : "Oldingi"}</Button>
+                {isSpeaking && speakingBusy && <span className="text-[12px]" style={{ color: C.danger }}>Avval yozuvni to'xtating</span>}
+                <Button onClick={goNextGuarded} disabled={isSpeaking && speakingBusy} icon="chevron-right">
+                  {isSpeaking && speakingIdxSafe < speakingParts.length - 1
+                    ? "Keyingi part"
+                    : idx < sectionKeys.length - 1
                     ? (sectionKeys[idx + 1] === "writing" ? "Yozishga o'tish" : "Keyingi bo'lim")
                     : "Yakunlash"}
                 </Button>
@@ -6423,6 +6837,16 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           )}
 
           {notepadOpen && <ExamNotepad value={notepadText} onChange={setNotepadText} onClose={() => setNotepadOpen(false)} />}
+
+          {skipPrompt && (
+            <ConfirmDialog
+              title="Yozuv yo'q"
+              message="Bu part uchun javob yozib olinmagan. Baribir keyingisiga o'tasizmi?"
+              danger={false}
+              onConfirm={() => { const fn = skipPrompt; setSkipPrompt(null); fn(); }}
+              onCancel={() => setSkipPrompt(null)}
+            />
+          )}
 
           {confirmExit && (
             <ConfirmDialog
@@ -6816,6 +7240,16 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
               <ResultSectionReview title="Listening" icon="headphones" questions={r.review.listening} />
               <ResultSectionReview title="Reading" icon="book-open" questions={r.review.reading} />
               <ResultSectionReview title="Vocabulary" icon="layer-group" questions={r.review.vocabulary} />
+            </Card>
+          ) : null}
+
+          {r.review?.speaking?.length ? (
+            <Card className="space-y-4">
+              <div className="flex items-center justify-between">
+                <h2 className="f-display text-[18px] font-semibold" style={{ color: C.ink }}>Speaking</h2>
+                <Badge tone="gold">O'qituvchi tinglaydi</Badge>
+              </div>
+              <SpeakingRecordings resultId={r.id} parts={r.review.speaking} />
             </Card>
           ) : null}
 
