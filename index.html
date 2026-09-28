@@ -3204,10 +3204,24 @@
        ADMIN — EXAMS (create/manage/toggle) + WRITING REVIEW
        ============================================================ */
     function sectionIcon(key) {
-      return { listening: "headphones", reading: "book-open", writing: "pen", vocabulary: "layer-group" }[key];
+      return { listening: "headphones", reading: "book-open", writing: "pen", speaking: "microphone" }[key];
     }
     function sectionLabel(key) {
-      return { listening: "Listening", reading: "Reading", writing: "Writing", vocabulary: "Vocabulary" }[key];
+      return { listening: "Listening", reading: "Reading", writing: "Writing", speaking: "Speaking" }[key];
+    }
+    /* Speaking — IELTS formatidagi 3 ta qism (Part 1/2/3) doim FIKS holda mavjud
+       (Listening'dagi kabi dinamik qo'shilmaydi/o'chirilmaydi). Har bir part o'z
+       savollar to'plamiga (pool) va shundan nechtasi so'raladigan bo'lsa
+       (questionCount) shu sondagi savolga ega. Eski (speaking'siz) mock'lar bilan
+       orqaga moslik uchun fallback. */
+    function normalizeSpeaking(speaking) {
+      const defaults = [
+        { id: "p1", title: "Part 1", questionCount: 3, questions: [] },
+        { id: "p2", title: "Part 2", questionCount: 1, questions: [] },
+        { id: "p3", title: "Part 3", questionCount: 3, questions: [] },
+      ];
+      if (!speaking || !speaking.parts) return { enabled: true, parts: defaults };
+      return { ...speaking, parts: defaults.map((d, i) => ({ ...d, ...(speaking.parts[i] || {}) })) };
     }
 
     /* Listening bo'limi Part1/Part2... tuzilmasida saqlanadi. Eski (parts'siz,
@@ -3451,12 +3465,13 @@
           listening: { enabled: true, audioUrl: "", instructions: "", parts: [{ id: uid("part"), title: "Part 1", questions: [] }] },
           reading: { enabled: true, instructions: "", passage: "", paragraphs: [], questions: [] },
           writing: { enabled: true, task1: { prompt: "", imageUrl: "", imageName: "", imageMime: "", minWords: 150 }, task2: { prompt: "", minWords: 250 } },
-          vocabulary: { enabled: true, questions: [] },
+          speaking: normalizeSpeaking(null),
         };
-        return { ...base, listening: { ...base.listening, parts: getListeningParts(base.listening) }, reading: { ...base.reading, paragraphs: base.reading.paragraphs || [] }, writing: normalizeWriting(base.writing) };
+        return { ...base, listening: { ...base.listening, parts: getListeningParts(base.listening) }, reading: { ...base.reading, paragraphs: base.reading.paragraphs || [] }, writing: normalizeWriting(base.writing), speaking: normalizeSpeaking(base.speaking) };
       });
-      const [qDraft, setQDraft] = useState({ listening: "", reading: "", vocabulary: "" });
-      /* Reading/Vocabulary bo'limlarida (part'ga bo'linmagan) savol qo'shishdan OLDIN
+      const [qDraft, setQDraft] = useState({ listening: "", reading: "" });
+      const [speakingDraft, setSpeakingDraft] = useState({});
+      /* Reading bo'limlarida (part'ga bo'linmagan) savol qo'shishdan OLDIN
          javob turi tanlanadi — draftKey bo'yicha saqlanadi, shunda bir xil turdagi
          bir nechta savolni ketma-ket, qayta tanlamasdan qo'shish mumkin. */
       const [qType, setQType] = useState({}); // { [draftKey]: "mcq" | "multi" | "text" | "matching" }
@@ -3531,6 +3546,18 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const setPartImage = (partId, url, name, mime) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, imageUrl: url, imageName: name, imageMime: mime } : p)) } }));
       /* Har bir listening part'i endi o'zining alohida audio faylini olishi mumkin. */
       const setPartAudio = (partId, url) => setSections((s) => ({ ...s, listening: { ...s.listening, parts: s.listening.parts.map((p) => (p.id === partId ? { ...p, audioUrl: url } : p)) } }));
+      /* Speaking — Part1/2/3 FIKS bo'lgani uchun add/removePart kerak emas, faqat
+         har bir part ichidagi savollar pool'i va so'raladigan savollar soni
+         (questionCount) boshqariladi. */
+      const addSpeakingQuestion = (partId, text) => {
+        const t = (text || "").trim();
+        if (!t) return;
+        setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: s.speaking.parts.map((p) => (p.id === partId ? { ...p, questions: [...p.questions, { id: uid("sq"), text: t }] } : p)) } }));
+        setSpeakingDraft((d) => ({ ...d, [partId]: "" }));
+      };
+      const removeSpeakingQuestion = (partId, qid) => setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: s.speaking.parts.map((p) => (p.id === partId ? { ...p, questions: p.questions.filter((q) => q.id !== qid) } : p)) } }));
+      const setSpeakingQuestionCount = (partId, count) => setSections((s) => ({ ...s, speaking: { ...s.speaking, parts: s.speaking.parts.map((p) => (p.id === partId ? { ...p, questionCount: Math.max(1, Number(count) || 1) } : p)) } }));
+
       /* Savollarni sectionKey (va listening uchun partId) bo'yicha umumiy tarzda yangilash */
       const updateQuestions = (sectionKey, updater, partId) => {
         setSections((s) => {
@@ -3594,7 +3621,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       };
 
       /* Javob turi endi HAR DOIM oldindan tanlangan bo'ladi (partMode — listening
-         part'lari uchun, yoki qType — reading/vocabulary uchun) — shuning uchun
+         part'lari uchun, yoki qType — reading uchun) — shuning uchun
          bu funksiya faqat forcedType mavjud bo'lganda savolni qo'shadi. Variantlar
          (options/to'g'ri javob) ham savol matni bilan BIR VAQTDA, pastdagi draft
          holatidan (qOptDraft) olib to'ldiriladi — qo'shilgandan keyin savol matnini
@@ -3607,7 +3634,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         setQDraft((d) => ({ ...d, [draftKey]: "" }));
         setQOptDraft((d) => ({ ...d, [draftKey]: freshOptionDraft(forcedType) }));
       };
-      /* Reading/Vocabulary uchun: avval javob turini tanlaydi (savol matni hali bo'sh) —
+      /* Reading uchun: avval javob turini tanlaydi (savol matni hali bo'sh) —
          tanlangan tur draftKey bo'yicha eslab qolinadi, matn keyin pastdagi maydonga yoziladi. */
       const chooseQType = (sectionKey, partId, answerType) => {
         const draftKey = partId ? `${sectionKey}:${partId}` : sectionKey;
@@ -3724,7 +3751,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
         const part = key === "listening" ? sections.listening.parts.find((p) => p.id === partId) : null;
         const questions = part ? part.questions : sections[key].questions;
         const draftKey = partId ? `${key}:${partId}` : key;
-        /* part yo'q bo'lgan bo'limlarda (Reading, Vocabulary) har bir yangi savol uchun
+        /* part yo'q bo'lgan bo'limlarda (Reading) har bir yangi savol uchun
            avval javob turi tanlanadi — tanlanmaguncha matn kiritish maydoni ko'rsatilmaydi. */
         const selectedType = qType[draftKey];
         const canPickMatching = key === "reading" && sections.reading.paragraphs.length > 0;
@@ -3875,7 +3902,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
                 )}
               </div>
             ))}
-            {/* part yo'q bo'lgan bo'limlarda (Reading, Vocabulary) yangi savol qo'shish —
+            {/* part yo'q bo'lgan bo'limlarda (Reading) yangi savol qo'shish —
                 AVVAL javob turi tanlanadi, matn keyin yoziladi. Listening part'larida
                 tur allaqachon partMode orqali tanlangan bo'ladi (yuqorida), shu sabab
                 bu yerda faqat matn maydoni ko'rsatiladi. */}
@@ -3992,7 +4019,14 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           const n = [w.task1.prompt.trim() ? 1 : 0, w.task2.prompt.trim() ? 1 : 0].reduce((a, b) => a + b, 0);
           return n ? `${n}/2 task kiritilgan` : "Tasklar kiritilmagan";
         }
-        if (key === "vocabulary") return s.questions.length ? `${s.questions.length} ta savol` : "Savollar kiritilmagan";
+        if (key === "speaking") {
+          const sp = normalizeSpeaking(s);
+          const total = sp.parts.reduce((sum, p) => sum + p.questions.length, 0);
+          const short = sp.parts.filter((p) => p.questions.length < p.questionCount);
+          return total
+            ? `${total} ta savol, 3 part${short.length ? ` (${short.map((p) => p.title).join(", ")} — savol yetarli emas)` : ""}`
+            : "Savollar kiritilmagan";
+        }
         return "";
       };
 
@@ -4096,7 +4130,59 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
             </div>
           );
         }
-        if (key === "vocabulary") return questionSection("vocabulary");
+        if (key === "speaking") {
+          const sp = normalizeSpeaking(sections.speaking);
+          const partHint = { p1: "Tanishuv va umumiy savollar (odatda 3-4 ta qisqa savol)", p2: "Cue Card — bitta mavzu, o'quvchi ~2 daqiqa gapiradi", p3: "Chuqurroq muhokama (odatda 3-4 ta savol)" };
+          return (
+            <div className="space-y-4">
+              {sp.parts.map((part) => (
+                <div key={part.id} className="rounded-xl p-3 space-y-3" style={{ border: `1px solid ${C.borderSoft}` }}>
+                  <div className="flex items-center justify-between gap-2 flex-wrap">
+                    <div>
+                      <div className="font-semibold text-[13.5px]" style={{ color: C.ink }}>{part.title}</div>
+                      <div className="text-[11.5px]" style={{ color: C.mutedSoft }}>{partHint[part.id]}</div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <span className="text-[12px]" style={{ color: C.mutedSoft }}>So'raladigan savollar soni:</span>
+                      <input
+                        type="number"
+                        min={1}
+                        value={part.questionCount}
+                        onChange={(e) => setSpeakingQuestionCount(part.id, e.target.value)}
+                        className="w-16 rounded px-2 py-1 text-[12.5px] outline-none text-center"
+                        style={{ border: `1px solid ${C.border}`, backgroundColor: C.card }}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-1.5">
+                    {part.questions.map((q, i) => (
+                      <div key={q.id} className="flex items-start justify-between gap-2 rounded-lg p-2.5" style={{ backgroundColor: C.paperDim }}>
+                        <div className="text-[13px] flex-1" style={{ color: C.text, whiteSpace: "pre-wrap" }}>{i + 1}. {q.text}</div>
+                        <button onClick={() => removeSpeakingQuestion(part.id, q.id)}><Icon name="trash" size={13} style={{ color: C.mutedSoft }} /></button>
+                      </div>
+                    ))}
+                    {!part.questions.length && <div className="text-[12px] italic" style={{ color: C.mutedSoft }}>Hali savol qo'shilmagan</div>}
+                    {part.questions.length < part.questionCount && (
+                      <div className="text-[11.5px]" style={{ color: C.danger }}>Kamida {part.questionCount} ta savol kiritilishi kerak (hozir {part.questions.length} ta)</div>
+                    )}
+                  </div>
+                  <div className="flex gap-2 items-end">
+                    <textarea
+                      value={speakingDraft[part.id] || ""}
+                      onChange={(e) => setSpeakingDraft((d) => ({ ...d, [part.id]: e.target.value }))}
+                      onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); addSpeakingQuestion(part.id, speakingDraft[part.id]); } }}
+                      placeholder="Savol matnini kiriting... (Enter — qo'shish)"
+                      rows={1}
+                      className="flex-1 rounded-lg text-[13px] outline-none px-3 py-2 resize-none"
+                      style={{ border: `1.5px solid ${C.border}`, backgroundColor: C.paper, minHeight: 40 }}
+                    />
+                    <Button size="sm" variant="subtle" icon="plus" onClick={() => addSpeakingQuestion(part.id, speakingDraft[part.id])}>Qo'shish</Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          );
+        }
         return null;
       };
 
@@ -4192,7 +4278,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
           <div>
             <div className="text-[13px] font-semibold mb-2" style={{ color: C.text }}>Bo'limlar</div>
             <div className="grid grid-cols-2 gap-3">
-              {["listening", "reading", "writing", "vocabulary"].map((key) => {
+              {["listening", "reading", "writing", "speaking"].map((key) => {
                 const enabled = sections[key].enabled;
                 return (
                   <button
@@ -5542,7 +5628,6 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
       const range = count > 1 ? `1 - ${count}` : "1";
       if (key === "listening") return `Audioni tinglang va ${range}-savollarga javob bering.`;
       if (key === "reading") return `Matnni o'qing va ${range}-savollarga javob bering.`;
-      if (key === "vocabulary") return `${range}-savollarga javob bering.`;
       return "";
     }
 
@@ -5779,7 +5864,7 @@ const addPart = () => setSections((s) => ({ ...s, listening: { ...s.listening, p
 
     /* Default section durations (minutes) used when an exam doesn't specify
        its own — mirrors the real IELTS CD test's per-section timing. */
-    const DEFAULT_SECTION_MINUTES = { listening: 30, reading: 60, writing: 60, vocabulary: 10 };
+    const DEFAULT_SECTION_MINUTES = { listening: 30, reading: 60, writing: 60, speaking: 15 };
     const FONT_SCALES = [0.9, 1, 1.1, 1.25];
 
     function fmtClock(totalSeconds) {
